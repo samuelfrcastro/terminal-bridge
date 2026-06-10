@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 export interface BridgeMessage {
   id: string;
@@ -7,9 +7,21 @@ export interface BridgeMessage {
   content: string;
 }
 
+/**
+ * Hub Realtime partilhado por todos os sites. Broadcast é efémero (sem tabelas,
+ * sem dados) e os canais são isolados por site, por isso um hub comum é seguro e
+ * evita depender do Realtime do Supabase de cada app (que pode estar quebrado,
+ * ex. projetos Lovable Cloud). A anon key é pública por design.
+ */
+export const DEFAULT_HUB = {
+  url: 'https://pzlakqqnkvogtfvippvx.supabase.co',
+  anonKey:
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB6bGFrcXFua3ZvZ3RmdmlwcHZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NTQzOTYsImV4cCI6MjA5MzAzMDM5Nn0.uHbz-Ft4MCLbcMPAS-tFMQhDny7XCkevUD-fBgW0euQ',
+};
+
 export interface UseTerminalBridgeOptions {
-  /** Cliente Supabase do site (já autenticado). */
-  supabase: SupabaseClient;
+  /** Cliente Supabase a usar. Se omitido, usa o hub Realtime partilhado (DEFAULT_HUB). */
+  supabase?: SupabaseClient;
   /** Nome do canal Realtime — único por site (ex. 'bridge-iocmanager'). */
   channel?: string;
   /** Liga/desliga a ponte (default true). */
@@ -58,8 +70,14 @@ async function captureScreenSmall(maxB64 = 180_000): Promise<string | null> {
  * Liga o chat ao Claude Code que corre na máquina do owner, via Supabase Realtime.
  * Online/offline por Presence (sem mensagens periódicas). Genérico: serve qualquer site.
  */
-export function useTerminalBridge(opts: UseTerminalBridgeOptions): TerminalBridge {
+export function useTerminalBridge(opts: UseTerminalBridgeOptions = {}): TerminalBridge {
   const { supabase, channel = 'terminal-bridge', enabled = true, captureMobileScreen = true } = opts;
+
+  // Usa o supabase fornecido, ou cria (uma vez) um client do hub partilhado.
+  const client = useMemo(
+    () => supabase ?? createClient(DEFAULT_HUB.url, DEFAULT_HUB.anonKey, { auth: { persistSession: false } }),
+    [supabase]
+  );
 
   const [messages, setMessages] = useState<BridgeMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -68,7 +86,7 @@ export function useTerminalBridge(opts: UseTerminalBridgeOptions): TerminalBridg
 
   useEffect(() => {
     if (!enabled) return;
-    const ch = supabase.channel(channel, { config: { broadcast: { self: false } } });
+    const ch = client.channel(channel, { config: { broadcast: { self: false } } });
 
     ch.on('broadcast', { event: 'assistant_msg' }, ({ payload }: any) => {
       setMessages((m) => [
@@ -91,11 +109,11 @@ export function useTerminalBridge(opts: UseTerminalBridgeOptions): TerminalBridg
     channelRef.current = ch;
 
     return () => {
-      supabase.removeChannel(ch);
+      client.removeChannel(ch);
       channelRef.current = null;
       setOnline(false);
     };
-  }, [supabase, channel, enabled]);
+  }, [client, channel, enabled]);
 
   const sendMessage = useCallback(
     async (content: string) => {

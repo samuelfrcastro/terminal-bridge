@@ -3,8 +3,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { useTerminalBridge } from './useTerminalBridge';
 
 export interface TerminalChatProps {
-  /** Cliente Supabase do site (já autenticado). */
-  supabase: SupabaseClient;
+  /** Cliente Supabase a usar. Se omitido, usa o hub Realtime partilhado. */
+  supabase?: SupabaseClient;
   /** Canal Realtime único por site (ex. 'bridge-iocmanager'). */
   channel?: string;
   /** Liga/desliga a ponte (default true). */

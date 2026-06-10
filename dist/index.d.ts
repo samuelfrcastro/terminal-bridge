@@ -7,8 +7,8 @@ interface BridgeMessage {
     content: string;
 }
 interface UseTerminalBridgeOptions {
-    /** Cliente Supabase do site (já autenticado). */
-    supabase: SupabaseClient;
+    /** Cliente Supabase a usar. Se omitido, usa o hub Realtime partilhado (DEFAULT_HUB). */
+    supabase?: SupabaseClient;
     /** Nome do canal Realtime — único por site (ex. 'bridge-iocmanager'). */
     channel?: string;
     /** Liga/desliga a ponte (default true). */
@@ -27,11 +27,11 @@ interface TerminalBridge {
  * Liga o chat ao Claude Code que corre na máquina do owner, via Supabase Realtime.
  * Online/offline por Presence (sem mensagens periódicas). Genérico: serve qualquer site.
  */
-declare function useTerminalBridge(opts: UseTerminalBridgeOptions): TerminalBridge;
+declare function useTerminalBridge(opts?: UseTerminalBridgeOptions): TerminalBridge;
 
 interface TerminalChatProps {
-    /** Cliente Supabase do site (já autenticado). */
-    supabase: SupabaseClient;
+    /** Cliente Supabase a usar. Se omitido, usa o hub Realtime partilhado. */
+    supabase?: SupabaseClient;
     /** Canal Realtime único por site (ex. 'bridge-iocmanager'). */
     channel?: string;
     /** Liga/desliga a ponte (default true). */

@@ -1,5 +1,10 @@
 // src/useTerminalBridge.ts
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
+var DEFAULT_HUB = {
+  url: "https://pzlakqqnkvogtfvippvx.supabase.co",
+  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB6bGFrcXFua3ZvZ3RmdmlwcHZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NTQzOTYsImV4cCI6MjA5MzAzMDM5Nn0.uHbz-Ft4MCLbcMPAS-tFMQhDny7XCkevUD-fBgW0euQ"
+};
 var uid = () => typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
 async function captureScreenSmall(maxB64 = 18e4) {
   try {
@@ -21,15 +26,19 @@ async function captureScreenSmall(maxB64 = 18e4) {
     return null;
   }
 }
-function useTerminalBridge(opts) {
+function useTerminalBridge(opts = {}) {
   const { supabase, channel = "terminal-bridge", enabled = true, captureMobileScreen = true } = opts;
+  const client = useMemo(
+    () => supabase ?? createClient(DEFAULT_HUB.url, DEFAULT_HUB.anonKey, { auth: { persistSession: false } }),
+    [supabase]
+  );
   const [messages, setMessages] = useState([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [online, setOnline] = useState(false);
   const channelRef = useRef(null);
   useEffect(() => {
     if (!enabled) return;
-    const ch = supabase.channel(channel, { config: { broadcast: { self: false } } });
+    const ch = client.channel(channel, { config: { broadcast: { self: false } } });
     ch.on("broadcast", { event: "assistant_msg" }, ({ payload }) => {
       setMessages((m) => [
         ...m,
@@ -47,11 +56,11 @@ function useTerminalBridge(opts) {
     ch.subscribe();
     channelRef.current = ch;
     return () => {
-      supabase.removeChannel(ch);
+      client.removeChannel(ch);
       channelRef.current = null;
       setOnline(false);
     };
-  }, [supabase, channel, enabled]);
+  }, [client, channel, enabled]);
   const sendMessage = useCallback(
     async (content) => {
       const text = content.trim();
