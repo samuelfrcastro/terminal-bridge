@@ -1,5 +1,5 @@
 {
-  "_comment": "Copia para sites.json e ajusta. Lista dos sites que consomem o plugin. O 'release' atualiza o package e faz deploy em cada um.",
+  "_comment": "Copia para sites.json e ajusta. Lista dos sites que consomem o plugin. O 'release' atualiza o package e faz deploy em cada um. 'installFlags' (opcional) é acrescentado ao 'npm install' — ex. '--legacy-peer-deps' para sites com conflitos de peer deps.",
   "gitRef": "github:samuelfrcastro/terminal-bridge",
   "sites": [
     {
@@ -10,7 +10,8 @@
     {
       "name": "grupo-jantar",
       "path": "/Users/samuelcastro/Developer/grupo-jantar",
-      "deploy": "vercel build --prod --yes && vercel deploy --prebuilt --prod --yes"
+      "installFlags": "--legacy-peer-deps",
+      "deploy": "rm -rf node_modules/.vite && bun run build && npx wrangler deploy"
     }
   ]
 }

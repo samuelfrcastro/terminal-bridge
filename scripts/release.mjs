@@ -42,7 +42,9 @@ for (const site of sites) {
   try {
     if (!existsSync(site.path)) throw new Error(`path não existe: ${site.path}`);
     console.log(`${tag} a atualizar o package (${gitRef})…`);
-    sh(`npm install ${gitRef} --save`, site.path);
+    // installFlags por site (ex. "--legacy-peer-deps" p/ sites com conflitos de peer deps pré-existentes).
+    const installFlags = site.installFlags ? ` ${site.installFlags}` : "";
+    sh(`npm install ${gitRef} --save${installFlags}`, site.path);
 
     if (noDeploy) {
       console.log(`${tag} ✓ atualizado (sem deploy)`);
