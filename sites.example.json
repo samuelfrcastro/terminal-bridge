@@ -1,0 +1,16 @@
+{
+  "_comment": "Copia para sites.json e ajusta. Lista dos sites que consomem o plugin. O 'release' atualiza o package e faz deploy em cada um.",
+  "gitRef": "github:samuelfrcastro/terminal-bridge",
+  "sites": [
+    {
+      "name": "iocmanager",
+      "path": "/Users/samuelcastro/Developer/iocmanager",
+      "deploy": "vercel build --prod --yes && vercel deploy --prebuilt --prod --yes"
+    },
+    {
+      "name": "grupo-jantar",
+      "path": "/Users/samuelcastro/Developer/grupo-jantar",
+      "deploy": "vercel build --prod --yes && vercel deploy --prebuilt --prod --yes"
+    }
+  ]
+}

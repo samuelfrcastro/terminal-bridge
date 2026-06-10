@@ -1,0 +1,7 @@
+node_modules/
+*.log
+.DS_Store
+# sites.json tem caminhos locais da máquina — cada máquina tem o seu
+sites.json
+.env
+.env.*
