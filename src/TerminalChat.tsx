@@ -27,8 +27,9 @@ export function TerminalChat({
   title = 'Terminal',
   placeholder = 'Escreve uma mensagem…',
 }: TerminalChatProps) {
-  const { messages, isStreaming, online, sendMessage } = useTerminalBridge({ supabase, channel, enabled });
+  const { messages, isStreaming, online, sendMessage, locked, unlock, relock } = useTerminalBridge({ supabase, channel, enabled });
   const [input, setInput] = useState('');
+  const [code, setCode] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -40,6 +41,13 @@ export function TerminalChat({
     if (!t) return;
     setInput('');
     void sendMessage(t);
+  };
+
+  const submitCode = () => {
+    const c = code.trim();
+    if (!c) return;
+    setCode('');
+    unlock(c);
   };
 
   return (
@@ -88,8 +96,76 @@ export function TerminalChat({
           />
           {online ? 'online' : 'offline'}
         </span>
+        {!locked && (
+          <button
+            onClick={relock}
+            title="Trocar / esquecer o código de acesso"
+            style={{
+              marginLeft: 4,
+              background: 'transparent',
+              border: 'none',
+              color: '#6b7280',
+              cursor: 'pointer',
+              fontSize: 13,
+              padding: 0,
+            }}
+          >
+            🔓
+          </button>
+        )}
       </div>
 
+      {/* Ecrã de desbloqueio — sem código, o terminal não aceita mensagens */}
+      {locked ? (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14, padding: 24, textAlign: 'center' }}>
+          <div style={{ fontSize: 32 }}>🔒</div>
+          <p style={{ color: '#9ca3af', margin: 0, maxWidth: 280 }}>
+            Este terminal está protegido. Introduz o código de acesso para o usar.
+          </p>
+          <div style={{ display: 'flex', gap: 8, width: '100%', maxWidth: 320 }}>
+            <input
+              type="password"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  submitCode();
+                }
+              }}
+              placeholder="Código de acesso"
+              autoFocus
+              style={{
+                flex: 1,
+                background: '#111827',
+                color: '#e5e7eb',
+                border: '1px solid #374151',
+                borderRadius: 8,
+                padding: '10px 12px',
+                fontSize: 14,
+                outline: 'none',
+              }}
+            />
+            <button
+              onClick={submitCode}
+              disabled={!code.trim()}
+              style={{
+                background: code.trim() ? '#2563eb' : '#374151',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 8,
+                padding: '0 16px',
+                cursor: code.trim() ? 'pointer' : 'default',
+                fontWeight: 600,
+              }}
+            >
+              Entrar
+            </button>
+          </div>
+          <p style={{ color: '#4b5563', fontSize: 11, margin: 0 }}>O código fica guardado neste dispositivo.</p>
+        </div>
+      ) : (
+      <>
       {/* Mensagens */}
       <div ref={listRef} style={{ flex: 1, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
         {messages.length === 0 && (
@@ -173,6 +249,8 @@ export function TerminalChat({
           ➤
         </button>
       </div>
+      </>
+      )}
     </div>
   );
 }

@@ -26,6 +26,12 @@ interface TerminalBridge {
     /** true enquanto o daemon (Claude Code) estiver presente no canal. */
     online: boolean;
     sendMessage: (content: string) => Promise<void>;
+    /** true quando ainda não há código de acesso guardado (chat trancado). */
+    locked: boolean;
+    /** Guarda o código de acesso (no localStorage, por canal) e destranca. */
+    unlock: (code: string) => void;
+    /** Esquece o código guardado (volta a trancar) — para corrigir um código errado. */
+    relock: () => void;
 }
 /**
  * Liga o chat ao Claude Code que corre na máquina do owner, via Supabase Realtime.

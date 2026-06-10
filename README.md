@@ -34,6 +34,7 @@ Cria `.env.agent` na raiz do site:
 SUPABASE_URL=https://<ref>.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<service role>
 BRIDGE_CHANNEL=bridge-<nome-do-site>
+BRIDGE_SECRET=<código de acesso forte>
 ```
 
 Depois:
@@ -45,6 +46,16 @@ npx terminal-bridge daemon
 ```
 
 > Para printscreens em background, concede **Screen Recording** + **Automation** ao `bun` nas Definições de Privacidade.
+
+## Segurança — código de acesso (v2+)
+
+O canal Realtime é público (a anon key e o nome do canal vão no bundle do site), por isso o daemon **só corre mensagens assinadas** com o `BRIDGE_SECRET`. Sem ele, qualquer um que ligasse ao canal podia mandar prompts ao Claude Code na tua máquina.
+
+- O daemon **recusa arrancar** sem `BRIDGE_SECRET` definido.
+- O frontend pede um **código de acesso** (guardado no `localStorage` por canal, nunca no bundle) e **assina cada mensagem** com HMAC-SHA256 sobre `id.ts.text`. O daemon verifica a assinatura, rejeita timestamps fora de ±5 min e bloqueia replays.
+- O código que escreves no chat **tem de ser igual** ao `BRIDGE_SECRET` do `.env.agent`. Usa o 🔓 no cabeçalho para o trocar.
+
+Gera um código forte, por exemplo: `openssl rand -hex 24`.
 
 ## Streaming ao vivo (v1.1+)
 
@@ -85,6 +96,7 @@ npx terminal-bridge release        # atualiza o package + deploy de todos
 | Var | Default | Função |
 |-----|---------|--------|
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | — | obrigatórias |
+| `BRIDGE_SECRET` | — | **obrigatória** — código de acesso (HMAC) |
 | `BRIDGE_CHANNEL` | `terminal-bridge` | canal único do site |
 | `AGENT_PROJECT_ROOT` | cwd | raiz do site |
 | `BRIDGE_MODEL` | (do CLI) | modelo do Claude Code |

@@ -6,6 +6,20 @@ var DEFAULT_HUB = {
   anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB6bGFrcXFua3ZvZ3RmdmlwcHZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NTQzOTYsImV4cCI6MjA5MzAzMDM5Nn0.uHbz-Ft4MCLbcMPAS-tFMQhDny7XCkevUD-fBgW0euQ"
 };
 var uid = () => typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+var secretKey = (channel) => `tb-secret:${channel}`;
+var readSecret = (channel) => {
+  try {
+    return typeof window !== "undefined" ? window.localStorage.getItem(secretKey(channel)) || "" : "";
+  } catch {
+    return "";
+  }
+};
+async function hmacHex(secret, msg) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(msg));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 async function captureScreenSmall(maxB64 = 18e4) {
   try {
     const { domToJpeg } = await import("modern-screenshot");
@@ -36,6 +50,28 @@ function useTerminalBridge(opts = {}) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [online, setOnline] = useState(false);
   const channelRef = useRef(null);
+  const [secret, setSecret] = useState(() => readSecret(channel));
+  useEffect(() => {
+    setSecret(readSecret(channel));
+  }, [channel]);
+  const unlock = useCallback(
+    (code) => {
+      const c = code.trim();
+      try {
+        if (typeof window !== "undefined") window.localStorage.setItem(secretKey(channel), c);
+      } catch {
+      }
+      setSecret(c);
+    },
+    [channel]
+  );
+  const relock = useCallback(() => {
+    try {
+      if (typeof window !== "undefined") window.localStorage.removeItem(secretKey(channel));
+    } catch {
+    }
+    setSecret("");
+  }, [channel]);
   useEffect(() => {
     if (!enabled) return;
     const ch = client.channel(channel, { config: { broadcast: { self: false } } });
@@ -82,6 +118,13 @@ function useTerminalBridge(opts = {}) {
     async (content) => {
       const text = content.trim();
       if (!text || isStreaming) return;
+      if (!secret) {
+        setMessages((m) => [
+          ...m,
+          { id: uid() + "-lock", role: "assistant", content: "\u{1F512} Introduz o c\xF3digo de acesso para usar o terminal." }
+        ]);
+        return;
+      }
       const id = uid();
       setMessages((m) => [...m, { id, role: "user", content: text }]);
       if (!online) {
@@ -99,20 +142,22 @@ function useTerminalBridge(opts = {}) {
       const route = window.location.pathname + window.location.search;
       const device = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? "mobile" : "desktop";
       const image = device === "mobile" && captureMobileScreen ? await captureScreenSmall() : null;
+      const ts = Date.now();
+      const sig = await hmacHex(secret, `${id}.${ts}.${text}`);
       await channelRef.current?.send({
         type: "broadcast",
         event: "user_msg",
-        payload: { id, text, route, device, image }
+        payload: { id, text, route, device, image, ts, sig }
       });
     },
-    [isStreaming, online, captureMobileScreen]
+    [isStreaming, online, captureMobileScreen, secret]
   );
-  return { messages, isStreaming, online, sendMessage };
+  return { messages, isStreaming, online, sendMessage, locked: !secret, unlock, relock };
 }
 
 // src/TerminalChat.tsx
 import { useEffect as useEffect2, useRef as useRef2, useState as useState2 } from "react";
-import { jsx, jsxs } from "react/jsx-runtime";
+import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 function TerminalChat({
   supabase,
   channel,
@@ -120,8 +165,9 @@ function TerminalChat({
   title = "Terminal",
   placeholder = "Escreve uma mensagem\u2026"
 }) {
-  const { messages, isStreaming, online, sendMessage } = useTerminalBridge({ supabase, channel, enabled });
+  const { messages, isStreaming, online, sendMessage, locked, unlock, relock } = useTerminalBridge({ supabase, channel, enabled });
   const [input, setInput] = useState2("");
+  const [code, setCode] = useState2("");
   const listRef = useRef2(null);
   useEffect2(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
@@ -131,6 +177,12 @@ function TerminalChat({
     if (!t) return;
     setInput("");
     void sendMessage(t);
+  };
+  const submitCode = () => {
+    const c = code.trim();
+    if (!c) return;
+    setCode("");
+    unlock(c);
   };
   return /* @__PURE__ */ jsxs(
     "div",
@@ -186,83 +238,151 @@ function TerminalChat({
                     online ? "online" : "offline"
                   ]
                 }
+              ),
+              !locked && /* @__PURE__ */ jsx(
+                "button",
+                {
+                  onClick: relock,
+                  title: "Trocar / esquecer o c\xF3digo de acesso",
+                  style: {
+                    marginLeft: 4,
+                    background: "transparent",
+                    border: "none",
+                    color: "#6b7280",
+                    cursor: "pointer",
+                    fontSize: 13,
+                    padding: 0
+                  },
+                  children: "\u{1F513}"
+                }
               )
             ]
           }
         ),
-        /* @__PURE__ */ jsxs("div", { ref: listRef, style: { flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 }, children: [
-          messages.length === 0 && /* @__PURE__ */ jsx("p", { style: { color: "#6b7280", textAlign: "center", marginTop: 24 }, children: online ? "Liga-te ao Claude Code da tua m\xE1quina. Escreve abaixo." : "\xC0 espera do terminal\u2026" }),
-          messages.map((m) => /* @__PURE__ */ jsxs(
-            "div",
-            {
-              style: {
-                alignSelf: m.role === "user" ? "flex-end" : "flex-start",
-                maxWidth: "85%",
-                padding: "8px 12px",
-                borderRadius: 12,
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-                background: m.role === "user" ? "#2563eb" : "#1f2937",
-                color: m.role === "user" ? "#fff" : "#e5e7eb"
-              },
-              children: [
-                m.tools && m.tools.length > 0 && /* @__PURE__ */ jsx("div", { style: { marginBottom: m.content ? 6 : 0, display: "flex", flexDirection: "column", gap: 2 }, children: m.tools.map((t, i) => /* @__PURE__ */ jsxs("span", { style: { color: "#9ca3af", fontSize: 12, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }, children: [
-                  "\u25B8 ",
-                  t
-                ] }, i)) }),
-                m.content,
-                m.streaming && /* @__PURE__ */ jsx("span", { style: { opacity: 0.6 }, className: "tb-caret", children: "\u258B" })
-              ]
-            },
-            m.id
-          )),
-          isStreaming && !messages.some((m) => m.streaming) && /* @__PURE__ */ jsx("div", { style: { alignSelf: "flex-start", color: "#9ca3af", fontStyle: "italic" }, children: "a pensar\u2026" })
-        ] }),
-        /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, padding: 10, borderTop: "1px solid #1f2937" }, children: [
-          /* @__PURE__ */ jsx(
-            "textarea",
-            {
-              value: input,
-              onChange: (e) => setInput(e.target.value),
-              onKeyDown: (e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  submit();
+        locked ? /* @__PURE__ */ jsxs("div", { style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, padding: 24, textAlign: "center" }, children: [
+          /* @__PURE__ */ jsx("div", { style: { fontSize: 32 }, children: "\u{1F512}" }),
+          /* @__PURE__ */ jsx("p", { style: { color: "#9ca3af", margin: 0, maxWidth: 280 }, children: "Este terminal est\xE1 protegido. Introduz o c\xF3digo de acesso para o usar." }),
+          /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, width: "100%", maxWidth: 320 }, children: [
+            /* @__PURE__ */ jsx(
+              "input",
+              {
+                type: "password",
+                value: code,
+                onChange: (e) => setCode(e.target.value),
+                onKeyDown: (e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    submitCode();
+                  }
+                },
+                placeholder: "C\xF3digo de acesso",
+                autoFocus: true,
+                style: {
+                  flex: 1,
+                  background: "#111827",
+                  color: "#e5e7eb",
+                  border: "1px solid #374151",
+                  borderRadius: 8,
+                  padding: "10px 12px",
+                  fontSize: 14,
+                  outline: "none"
                 }
-              },
-              placeholder,
-              rows: 1,
-              style: {
-                flex: 1,
-                resize: "none",
-                background: "#111827",
-                color: "#e5e7eb",
-                border: "1px solid #374151",
-                borderRadius: 8,
-                padding: "8px 10px",
-                fontFamily: "inherit",
-                fontSize: 14,
-                outline: "none"
               }
-            }
-          ),
-          /* @__PURE__ */ jsx(
-            "button",
-            {
-              onClick: submit,
-              disabled: isStreaming || !input.trim(),
-              style: {
-                background: isStreaming || !input.trim() ? "#374151" : "#2563eb",
-                color: "#fff",
-                border: "none",
-                borderRadius: 8,
-                padding: "0 16px",
-                cursor: isStreaming || !input.trim() ? "default" : "pointer",
-                fontWeight: 600
+            ),
+            /* @__PURE__ */ jsx(
+              "button",
+              {
+                onClick: submitCode,
+                disabled: !code.trim(),
+                style: {
+                  background: code.trim() ? "#2563eb" : "#374151",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 8,
+                  padding: "0 16px",
+                  cursor: code.trim() ? "pointer" : "default",
+                  fontWeight: 600
+                },
+                children: "Entrar"
+              }
+            )
+          ] }),
+          /* @__PURE__ */ jsx("p", { style: { color: "#4b5563", fontSize: 11, margin: 0 }, children: "O c\xF3digo fica guardado neste dispositivo." })
+        ] }) : /* @__PURE__ */ jsxs(Fragment, { children: [
+          /* @__PURE__ */ jsxs("div", { ref: listRef, style: { flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 }, children: [
+            messages.length === 0 && /* @__PURE__ */ jsx("p", { style: { color: "#6b7280", textAlign: "center", marginTop: 24 }, children: online ? "Liga-te ao Claude Code da tua m\xE1quina. Escreve abaixo." : "\xC0 espera do terminal\u2026" }),
+            messages.map((m) => /* @__PURE__ */ jsxs(
+              "div",
+              {
+                style: {
+                  alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                  maxWidth: "85%",
+                  padding: "8px 12px",
+                  borderRadius: 12,
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  background: m.role === "user" ? "#2563eb" : "#1f2937",
+                  color: m.role === "user" ? "#fff" : "#e5e7eb"
+                },
+                children: [
+                  m.tools && m.tools.length > 0 && /* @__PURE__ */ jsx("div", { style: { marginBottom: m.content ? 6 : 0, display: "flex", flexDirection: "column", gap: 2 }, children: m.tools.map((t, i) => /* @__PURE__ */ jsxs("span", { style: { color: "#9ca3af", fontSize: 12, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }, children: [
+                    "\u25B8 ",
+                    t
+                  ] }, i)) }),
+                  m.content,
+                  m.streaming && /* @__PURE__ */ jsx("span", { style: { opacity: 0.6 }, className: "tb-caret", children: "\u258B" })
+                ]
               },
-              children: "\u27A4"
-            }
-          )
+              m.id
+            )),
+            isStreaming && !messages.some((m) => m.streaming) && /* @__PURE__ */ jsx("div", { style: { alignSelf: "flex-start", color: "#9ca3af", fontStyle: "italic" }, children: "a pensar\u2026" })
+          ] }),
+          /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, padding: 10, borderTop: "1px solid #1f2937" }, children: [
+            /* @__PURE__ */ jsx(
+              "textarea",
+              {
+                value: input,
+                onChange: (e) => setInput(e.target.value),
+                onKeyDown: (e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    submit();
+                  }
+                },
+                placeholder,
+                rows: 1,
+                style: {
+                  flex: 1,
+                  resize: "none",
+                  background: "#111827",
+                  color: "#e5e7eb",
+                  border: "1px solid #374151",
+                  borderRadius: 8,
+                  padding: "8px 10px",
+                  fontFamily: "inherit",
+                  fontSize: 14,
+                  outline: "none"
+                }
+              }
+            ),
+            /* @__PURE__ */ jsx(
+              "button",
+              {
+                onClick: submit,
+                disabled: isStreaming || !input.trim(),
+                style: {
+                  background: isStreaming || !input.trim() ? "#374151" : "#2563eb",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 8,
+                  padding: "0 16px",
+                  cursor: isStreaming || !input.trim() ? "default" : "pointer",
+                  fontWeight: 600
+                },
+                children: "\u27A4"
+              }
+            )
+          ] })
         ] })
       ]
     }

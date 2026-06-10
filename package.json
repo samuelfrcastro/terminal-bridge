@@ -1,6 +1,6 @@
 {
   "name": "terminal-bridge",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "description": "Plugin reutilizável: liga o chat de um site ao Claude Code local (na máquina do owner), via Supabase Realtime. Inclui Presence (online/offline), printscreen e continuidade de sessão. Melhora-se uma vez, vale para todos os sites.",
   "type": "module",
   "license": "MIT",

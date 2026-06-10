@@ -40,12 +40,36 @@ export interface TerminalBridge {
   /** true enquanto o daemon (Claude Code) estiver presente no canal. */
   online: boolean;
   sendMessage: (content: string) => Promise<void>;
+  /** true quando ainda não há código de acesso guardado (chat trancado). */
+  locked: boolean;
+  /** Guarda o código de acesso (no localStorage, por canal) e destranca. */
+  unlock: (code: string) => void;
+  /** Esquece o código guardado (volta a trancar) — para corrigir um código errado. */
+  relock: () => void;
 }
 
 const uid = () =>
   typeof crypto !== 'undefined' && crypto.randomUUID
     ? crypto.randomUUID()
     : Math.random().toString(36).slice(2);
+
+/** Chave de localStorage do código de acesso, isolada por canal. */
+const secretKey = (channel: string) => `tb-secret:${channel}`;
+const readSecret = (channel: string): string => {
+  try {
+    return typeof window !== 'undefined' ? window.localStorage.getItem(secretKey(channel)) || '' : '';
+  } catch {
+    return '';
+  }
+};
+
+/** HMAC-SHA256(secret, msg) em hex, via WebCrypto. Assina cada mensagem sem expor o código. */
+async function hmacHex(secret: string, msg: string): Promise<string> {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(msg));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 /** Captura a página atual como JPEG pequeno (base64) para o daemon ler. Lazy-load da lib. */
 async function captureScreenSmall(maxB64 = 180_000): Promise<string | null> {
@@ -87,6 +111,22 @@ export function useTerminalBridge(opts: UseTerminalBridgeOptions = {}): Terminal
   const [isStreaming, setIsStreaming] = useState(false);
   const [online, setOnline] = useState(false);
   const channelRef = useRef<ReturnType<SupabaseClient['channel']> | null>(null);
+
+  // Código de acesso (HMAC). Guardado no localStorage por canal; nunca vai no bundle.
+  const [secret, setSecret] = useState<string>(() => readSecret(channel));
+  useEffect(() => { setSecret(readSecret(channel)); }, [channel]);
+  const unlock = useCallback(
+    (code: string) => {
+      const c = code.trim();
+      try { if (typeof window !== 'undefined') window.localStorage.setItem(secretKey(channel), c); } catch {}
+      setSecret(c);
+    },
+    [channel]
+  );
+  const relock = useCallback(() => {
+    try { if (typeof window !== 'undefined') window.localStorage.removeItem(secretKey(channel)); } catch {}
+    setSecret('');
+  }, [channel]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -150,6 +190,13 @@ export function useTerminalBridge(opts: UseTerminalBridgeOptions = {}): Terminal
     async (content: string) => {
       const text = content.trim();
       if (!text || isStreaming) return;
+      if (!secret) {
+        setMessages((m) => [
+          ...m,
+          { id: uid() + '-lock', role: 'assistant', content: '🔒 Introduz o código de acesso para usar o terminal.' },
+        ]);
+        return;
+      }
       const id = uid();
       setMessages((m) => [...m, { id, role: 'user', content: text }]);
 
@@ -170,14 +217,17 @@ export function useTerminalBridge(opts: UseTerminalBridgeOptions = {}): Terminal
       const route = window.location.pathname + window.location.search;
       const device = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? 'mobile' : 'desktop';
       const image = device === 'mobile' && captureMobileScreen ? await captureScreenSmall() : null;
+      // Assina a mensagem com o código (HMAC + timestamp) — o daemon só corre se bater certo.
+      const ts = Date.now();
+      const sig = await hmacHex(secret, `${id}.${ts}.${text}`);
       await channelRef.current?.send({
         type: 'broadcast',
         event: 'user_msg',
-        payload: { id, text, route, device, image },
+        payload: { id, text, route, device, image, ts, sig },
       });
     },
-    [isStreaming, online, captureMobileScreen]
+    [isStreaming, online, captureMobileScreen, secret]
   );
 
-  return { messages, isStreaming, online, sendMessage };
+  return { messages, isStreaming, online, sendMessage, locked: !secret, unlock, relock };
 }
