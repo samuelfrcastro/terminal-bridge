@@ -61,6 +61,18 @@ O daemon corre o Claude Code com `--output-format stream-json` e emite os tokens
 
 Retrocompatível: clientes antigos (≤1.0.1) ignoram `assistant_delta`/`tool_use` e funcionam na mesma só com o `assistant_msg` final. A mensagem final substitui o texto streamado, corrigindo deltas eventualmente perdidos.
 
+## Contexto de página (v1.2+)
+
+Cada mensagem leva a rota atual (`window.location`). O daemon dá esse contexto ao Claude de três formas, combinadas quando disponíveis: **rota** (sempre), **rota→ficheiro** (`which-page` resolve o ficheiro da página) e **printscreen** (aba marcada com `?claude=1` no desktop, ou captura do DOM no telemóvel).
+
+O `which-page` reconhece o router automaticamente:
+
+| Router | Como deteta | Resolve |
+|--------|-------------|---------|
+| react-router | `src/App.tsx` com `<Route>` | `<Route path>` → componente lazy/`src/pages` |
+| TanStack | `src/routes/` | file-based (flat por `.` e por pastas, `$param`→`:param`) |
+| Next | `app/` ou `pages/` | `[param]`→`:param`, `[...x]`→`*`, grupos `(x)` ignorados |
+
 ## Propagar melhorias a todos os sites
 
 ```sh
