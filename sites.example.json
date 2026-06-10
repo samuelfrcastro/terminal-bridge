@@ -5,7 +5,7 @@
     {
       "name": "iocmanager",
       "path": "/Users/samuelcastro/Developer/iocmanager",
-      "deploy": "vercel build --prod --yes && vercel deploy --prebuilt --prod --yes"
+      "deploy": "vercel build --prod --yes && vercel deploy --prebuilt --prod --yes --archive=tgz"
     },
     {
       "name": "grupo-jantar",
