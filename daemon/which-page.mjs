@@ -9,35 +9,108 @@
 //
 // Parseia src/App.tsx em runtime, por isso acompanha sempre as rotas reais.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { execSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
 // Raiz do projeto-alvo (a app do site). Configurável — o package vive noutro sítio.
 const root = process.env.AGENT_PROJECT_ROOT || resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const appSrc = readFileSync(join(root, "src", "App.tsx"), "utf8");
 
-// 1) imports lazy:  const FaturacaoPage = lazy(() => import("./pages/FaturacaoPage"));
-const compToFile = {};
-for (const m of appSrc.matchAll(/const\s+(\w+)\s*=\s*lazy\(\(\)\s*=>\s*import\(["']([^"']+)["']\)\)/g)) {
-  compToFile[m[1]] = m[2].replace(/^\.\//, "src/").replace(/^src\/src\//, "src/") + ".tsx";
-}
-// imports diretos (não-lazy), por segurança
-for (const m of appSrc.matchAll(/import\s+\{?\s*(\w+)\s*\}?\s+from\s+["'](\.\/pages\/[^"']+)["']/g)) {
-  compToFile[m[1]] = m[2].replace(/^\.\//, "src/") + ".tsx";
+// ───────────────────────── Resolvers de rota por framework ─────────────────────────
+// O which-page suporta vários routers. Escolhe o adapter pelo que existe no projeto,
+// para que rota→ficheiro funcione tanto no iocmanager (react-router) como no
+// grupo-jantar (TanStack) ou em apps Next. Cada adapter devolve {kind, routes:[{path,file,comp}]}.
+
+const RX_TSX = /\.[jt]sx?$/;
+const listFiles = (dir) =>
+  existsSync(dir) ? readdirSync(dir, { recursive: true }).map((p) => String(p).replace(/\\/g, "/")) : [];
+
+// react-router: parseia src/App.tsx (<Route path="/x" element={<XPage/>} />).
+function buildReactRouter(root) {
+  const appPath = join(root, "src", "App.tsx");
+  if (!existsSync(appPath)) return null;
+  const appSrc = readFileSync(appPath, "utf8");
+  if (!/<Route\b/.test(appSrc)) return null;
+
+  const compToFile = {};
+  for (const m of appSrc.matchAll(/const\s+(\w+)\s*=\s*lazy\(\(\)\s*=>\s*import\(["']([^"']+)["']\)\)/g))
+    compToFile[m[1]] = m[2].replace(/^\.\//, "src/").replace(/^src\/src\//, "src/") + ".tsx";
+  for (const m of appSrc.matchAll(/import\s+\{?\s*(\w+)\s*\}?\s+from\s+["'](\.\/pages\/[^"']+)["']/g))
+    compToFile[m[1]] = m[2].replace(/^\.\//, "src/") + ".tsx";
+
+  const routes = [];
+  for (const m of appSrc.matchAll(/<Route\s+path="([^"]+)"\s+element=\{([\s\S]*?)\}\s*\/>/g)) {
+    const comps = [...m[2].matchAll(/<(\w+)\s*\/?>/g)].map((x) => x[1]);
+    const pageComp = comps.reverse().find((c) => compToFile[c]);
+    if (pageComp) routes.push({ path: m[1], file: compToFile[pageComp], comp: pageComp });
+  }
+  return routes.length ? { kind: "react-router", routes } : null;
 }
 
-// 2) rotas:  <Route path="/faturacao" element={ ... <FaturacaoPage /> ... } />
-const routes = [];
-for (const m of appSrc.matchAll(/<Route\s+path="([^"]+)"\s+element=\{([\s\S]*?)\}\s*\/>/g)) {
-  const path = m[1];
-  const block = m[2];
-  // o último componente *Page/Dashboard renderizado é a página
-  const comps = [...block.matchAll(/<(\w+)\s*\/?>/g)].map((x) => x[1]);
-  const pageComp = comps.reverse().find((c) => compToFile[c]);
-  if (pageComp) routes.push({ path, file: compToFile[pageComp], comp: pageComp });
+// TanStack Router: file-based em src/routes (flat por '.' e/ou por pastas).
+// restaurant.salas.tsx → /restaurant/salas ; menus.$id.tsx → /menus/:id ; index → segmento do pai.
+function buildTanstack(root) {
+  const dir = join(root, "src", "routes");
+  if (!existsSync(dir)) return null;
+
+  const files = listFiles(dir).filter((f) => RX_TSX.test(f));
+  // flatBase = caminho relativo sem extensão, com '/' e '.' unificados em '.' (chave de nesting).
+  const flatBase = (rel) => rel.replace(RX_TSX, "").replace(/\//g, ".");
+  const bases = new Set(files.map(flatBase));
+
+  const routes = [];
+  for (const rel of files) {
+    const name = rel.split("/").pop().replace(RX_TSX, "");
+    if (name.startsWith("__") || name === "route") continue; // __root, ficheiros de layout
+    const fb = flatBase(rel);
+    if (bases.has(fb + ".index")) continue; // é o layout; o irmão .index serve a página deste path
+
+    const segs = [];
+    for (let s of fb.split(".")) {
+      if (s === "index") continue; // index → path do pai
+      if (s.startsWith("_")) continue; // _layout pathless → sem segmento no URL
+      s = s.replace(/_$/, ""); // trailing _ (opt-out de nesting) → mesmo URL
+      if (s === "$") s = "*"; // splat
+      else if (s.startsWith("$")) s = ":" + s.slice(1); // $id → :id
+      segs.push(s);
+    }
+    routes.push({ path: "/" + segs.join("/"), file: "src/routes/" + rel, comp: name });
+  }
+  return routes.length ? { kind: "tanstack", routes } : null;
 }
+
+// Next.js (app/ ou pages/): [param] → :param, [...x] → *, grupos (x) ignorados.
+function buildNext(root) {
+  for (const baseRel of ["app", "src/app", "pages", "src/pages"]) {
+    const dir = join(root, baseRel);
+    if (!existsSync(dir)) continue;
+    const isApp = baseRel.endsWith("app");
+    const routes = [];
+    for (const rel of listFiles(dir)) {
+      const name = rel.split("/").pop();
+      if (isApp ? !/^(page|route)\.[jt]sx?$/.test(name) : !RX_TSX.test(name)) continue;
+      if (!isApp && /^_/.test(name)) continue; // _app, _document
+
+      let parts = isApp ? rel.split("/").slice(0, -1) : rel.replace(RX_TSX, "").split("/");
+      if (!isApp && parts[parts.length - 1] === "index") parts.pop();
+      const url = parts
+        .filter((s) => !/^\(.*\)$/.test(s)) // route groups
+        .map((s) => s.replace(/^\[\.\.\.(.+)\]$/, "*").replace(/^\[(.+)\]$/, ":$1"))
+        .join("/");
+      routes.push({ path: "/" + url, file: baseRel + "/" + rel, comp: name });
+    }
+    if (routes.length) return { kind: isApp ? "next-app" : "next-pages", routes };
+  }
+  return null;
+}
+
+const resolved = buildReactRouter(root) || buildTanstack(root) || buildNext(root);
+if (!resolved) {
+  console.error("✗ Router não reconhecido (sem src/App.tsx com <Route>, src/routes/, app/ ou pages/).");
+  process.exit(1);
+}
+const { kind: routerKind, routes } = resolved;
 
 function matchRoute(pathname) {
   // match exacto
@@ -179,7 +252,7 @@ if (explicit) {
 
 const hit = matchRoute(pathname);
 if (!hit) {
-  console.error(`✗ Sem rota correspondente a "${pathname}" em App.tsx (${sourceLabel})`);
+  console.error(`✗ Sem rota correspondente a "${pathname}" (${routerKind}) (${sourceLabel})`);
   process.exit(1);
 }
 

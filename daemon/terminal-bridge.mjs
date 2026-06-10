@@ -63,8 +63,9 @@ async function resolveRoute(route) {
   try {
     const path = route.split("?")[0].split("#")[0] || "/";
     const { stdout } = await execFileP(process.execPath, [WHICH_PAGE, path], { cwd: ROOT, timeout: 10_000, env: childEnv });
-    const m = stdout.match(/src\/pages\/[A-Za-z0-9_]+\.tsx/);
-    return m ? m[0] : null;
+    // Lê a linha "📄 <ficheiro>" — funciona p/ qualquer router (src/pages, src/routes, app/…).
+    const m = stdout.match(/📄\s+(\S+\.[jt]sx?)/);
+    return m ? m[1] : null;
   } catch {
     return null;
   }
@@ -189,13 +190,13 @@ async function handle(payload) {
   const routeFile = payload.route ? await resolveRoute(payload.route) : null;
   if (routeFile) console.log(`\x1b[90m   📄 ${payload.route} → ${routeFile}\x1b[0m`);
 
-  let prompt = text;
-  if (shot) {
-    prompt = `O utilizador está a ver esta página da app. Tens um printscreen REAL do que ele vê em \`${shot}\` — lê-o com a tool Read antes de responder. Pedido:\n\n${text}`;
-  } else if (routeFile) {
-    const where = onMobile ? "no telemóvel" : "no browser";
-    prompt = `O utilizador está ${where} na rota \`${payload.route}\` (ficheiro \`${routeFile}\`). Sem printscreen — usa o ficheiro para contexto. Pedido:\n\n${text}`;
-  }
+  // Contexto de página: combina os sinais que existirem (rota sempre, + ficheiro, + printscreen).
+  const where = onMobile ? "no telemóvel" : "no browser";
+  const ctx = [];
+  if (payload.route) ctx.push(`O utilizador está ${where} na rota \`${payload.route}\`.`);
+  if (routeFile) ctx.push(`Essa rota corresponde ao ficheiro \`${routeFile}\` — usa-o para contexto.`);
+  if (shot) ctx.push(`Tens um printscreen REAL do que ele vê em \`${shot}\` — lê-o com a tool Read antes de responder.`);
+  const prompt = ctx.length ? `${ctx.join(" ")}\n\nPedido:\n\n${text}` : text;
 
   // Envios serializados → preserva a ordem (deltas de texto vs linhas de tool).
   let sendQ = Promise.resolve();
