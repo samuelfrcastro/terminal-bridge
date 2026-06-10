@@ -55,6 +55,7 @@ export function TerminalChat({
         fontSize: 14,
       }}
     >
+      <style>{'@keyframes tb-blink{0%,49%{opacity:1}50%,100%{opacity:0}}.tb-caret{animation:tb-blink 1s step-end infinite;margin-left:1px}'}</style>
       {/* Cabeçalho + estado */}
       <div
         style={{
@@ -110,10 +111,22 @@ export function TerminalChat({
               color: m.role === 'user' ? '#fff' : '#e5e7eb',
             }}
           >
+            {/* Atividade de ferramentas (durante o stream), em cinzento monospace */}
+            {m.tools && m.tools.length > 0 && (
+              <div style={{ marginBottom: m.content ? 6 : 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {m.tools.map((t, i) => (
+                  <span key={i} style={{ color: '#9ca3af', fontSize: 12, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+                    ▸ {t}
+                  </span>
+                ))}
+              </div>
+            )}
             {m.content}
+            {m.streaming && <span style={{ opacity: 0.6 }} className="tb-caret">▋</span>}
           </div>
         ))}
-        {isStreaming && (
+        {/* "a pensar…" só antes do primeiro delta/tool — depois disso o próprio balão mostra o cursor */}
+        {isStreaming && !messages.some((m) => m.streaming) && (
           <div style={{ alignSelf: 'flex-start', color: '#9ca3af', fontStyle: 'italic' }}>a pensar…</div>
         )}
       </div>

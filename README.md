@@ -1,6 +1,6 @@
 # terminal-bridge
 
-Plugin reutilizável: liga o **chat de um site** ao **Claude Code que corre na tua máquina**, via Supabase Realtime. Inclui indicador online/offline (Presence), printscreen da página (desktop e telemóvel) e continuidade de sessão.
+Plugin reutilizável: liga o **chat de um site** ao **Claude Code que corre na tua máquina**, via Supabase Realtime. Inclui **streaming ao vivo** (texto token-a-token + atividade de ferramentas), indicador online/offline (Presence), printscreen da página (desktop e telemóvel) e continuidade de sessão.
 
 **Melhora-se uma vez → vale para todos os sites.** A lógica vive no daemon (muda na hora para todos); o frontend é fino e propaga-se com `terminal-bridge release`.
 
@@ -45,6 +45,21 @@ npx terminal-bridge daemon
 ```
 
 > Para printscreens em background, concede **Screen Recording** + **Automation** ao `bun` nas Definições de Privacidade.
+
+## Streaming ao vivo (v1.1+)
+
+O daemon corre o Claude Code com `--output-format stream-json` e emite os tokens à medida que chegam, em vez de esperar pela resposta completa. O `<TerminalChat>` mostra o texto a aparecer e as ferramentas a serem usadas (`▸ Read src/Header.tsx`) com um cursor a piscar — sem mais minutos de silêncio em "a pensar…".
+
+**Protocolo (broadcast no canal do site):**
+
+| Evento | Direção | Payload | Quando |
+|--------|---------|---------|--------|
+| `user_msg` | site → daemon | `{ id, text, route, device, image }` | utilizador envia |
+| `assistant_delta` | daemon → site | `{ id, text }` | pedaço de texto (throttle ~120ms) |
+| `tool_use` | daemon → site | `{ id, summary }` | Claude usa uma ferramenta |
+| `assistant_msg` | daemon → site | `{ id, text, session, streamed }` | resposta final (autoritativa) |
+
+Retrocompatível: clientes antigos (≤1.0.1) ignoram `assistant_delta`/`tool_use` e funcionam na mesma só com o `assistant_msg` final. A mensagem final substitui o texto streamado, corrigindo deltas eventualmente perdidos.
 
 ## Propagar melhorias a todos os sites
 

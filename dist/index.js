@@ -39,11 +39,28 @@ function useTerminalBridge(opts = {}) {
   useEffect(() => {
     if (!enabled) return;
     const ch = client.channel(channel, { config: { broadcast: { self: false } } });
+    const akey = (id) => (id || uid()) + "-a";
+    const upsertAssistant = (id, mut, seed) => setMessages((m) => {
+      const key = akey(id);
+      const idx = m.findIndex((x) => x.id === key);
+      if (idx === -1) {
+        return [...m, mut({ id: key, role: "assistant", content: "", ...seed })];
+      }
+      const copy = m.slice();
+      copy[idx] = mut(copy[idx]);
+      return copy;
+    });
+    ch.on("broadcast", { event: "assistant_delta" }, ({ payload }) => {
+      upsertAssistant(payload.id, (msg) => ({ ...msg, content: msg.content + (payload.text || ""), streaming: true }));
+      setIsStreaming(true);
+    });
+    ch.on("broadcast", { event: "tool_use" }, ({ payload }) => {
+      if (!payload.summary) return;
+      upsertAssistant(payload.id, (msg) => ({ ...msg, tools: [...msg.tools || [], payload.summary], streaming: true }));
+      setIsStreaming(true);
+    });
     ch.on("broadcast", { event: "assistant_msg" }, ({ payload }) => {
-      setMessages((m) => [
-        ...m,
-        { id: (payload.id || uid()) + "-a", role: "assistant", content: payload.text }
-      ]);
+      upsertAssistant(payload.id, (msg) => ({ ...msg, content: payload.text, streaming: false }));
       setIsStreaming(false);
     });
     const refresh = () => {
@@ -129,6 +146,7 @@ function TerminalChat({
         fontSize: 14
       },
       children: [
+        /* @__PURE__ */ jsx("style", { children: "@keyframes tb-blink{0%,49%{opacity:1}50%,100%{opacity:0}}.tb-caret{animation:tb-blink 1s step-end infinite;margin-left:1px}" }),
         /* @__PURE__ */ jsxs(
           "div",
           {
@@ -174,7 +192,7 @@ function TerminalChat({
         ),
         /* @__PURE__ */ jsxs("div", { ref: listRef, style: { flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 }, children: [
           messages.length === 0 && /* @__PURE__ */ jsx("p", { style: { color: "#6b7280", textAlign: "center", marginTop: 24 }, children: online ? "Liga-te ao Claude Code da tua m\xE1quina. Escreve abaixo." : "\xC0 espera do terminal\u2026" }),
-          messages.map((m) => /* @__PURE__ */ jsx(
+          messages.map((m) => /* @__PURE__ */ jsxs(
             "div",
             {
               style: {
@@ -187,11 +205,18 @@ function TerminalChat({
                 background: m.role === "user" ? "#2563eb" : "#1f2937",
                 color: m.role === "user" ? "#fff" : "#e5e7eb"
               },
-              children: m.content
+              children: [
+                m.tools && m.tools.length > 0 && /* @__PURE__ */ jsx("div", { style: { marginBottom: m.content ? 6 : 0, display: "flex", flexDirection: "column", gap: 2 }, children: m.tools.map((t, i) => /* @__PURE__ */ jsxs("span", { style: { color: "#9ca3af", fontSize: 12, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }, children: [
+                  "\u25B8 ",
+                  t
+                ] }, i)) }),
+                m.content,
+                m.streaming && /* @__PURE__ */ jsx("span", { style: { opacity: 0.6 }, className: "tb-caret", children: "\u258B" })
+              ]
             },
             m.id
           )),
-          isStreaming && /* @__PURE__ */ jsx("div", { style: { alignSelf: "flex-start", color: "#9ca3af", fontStyle: "italic" }, children: "a pensar\u2026" })
+          isStreaming && !messages.some((m) => m.streaming) && /* @__PURE__ */ jsx("div", { style: { alignSelf: "flex-start", color: "#9ca3af", fontStyle: "italic" }, children: "a pensar\u2026" })
         ] }),
         /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, padding: 10, borderTop: "1px solid #1f2937" }, children: [
           /* @__PURE__ */ jsx(

@@ -5,6 +5,10 @@ export interface BridgeMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** Linhas de atividade de ferramentas (ex. "Read src/Header.tsx"), durante o stream. */
+  tools?: string[];
+  /** true enquanto ainda chegam deltas desta resposta. */
+  streaming?: boolean;
 }
 
 /**
@@ -88,11 +92,38 @@ export function useTerminalBridge(opts: UseTerminalBridgeOptions = {}): Terminal
     if (!enabled) return;
     const ch = client.channel(channel, { config: { broadcast: { self: false } } });
 
+    // Chave da mensagem do assistente para um dado pedido (id da mensagem do user).
+    const akey = (id?: string) => (id || uid()) + '-a';
+
+    // Upsert: aplica `mut` à mensagem do assistente existente, ou cria uma nova.
+    const upsertAssistant = (id: string, mut: (msg: BridgeMessage) => BridgeMessage, seed?: Partial<BridgeMessage>) =>
+      setMessages((m) => {
+        const key = akey(id);
+        const idx = m.findIndex((x) => x.id === key);
+        if (idx === -1) {
+          return [...m, mut({ id: key, role: 'assistant', content: '', ...seed })];
+        }
+        const copy = m.slice();
+        copy[idx] = mut(copy[idx]);
+        return copy;
+      });
+
+    // Token de texto (throttled no daemon): acumula no balão e mantém o estado de stream.
+    ch.on('broadcast', { event: 'assistant_delta' }, ({ payload }: any) => {
+      upsertAssistant(payload.id, (msg) => ({ ...msg, content: msg.content + (payload.text || ''), streaming: true }));
+      setIsStreaming(true);
+    });
+
+    // Atividade de ferramenta (ex. "Read src/Header.tsx") — linha cinzenta acima do texto.
+    ch.on('broadcast', { event: 'tool_use' }, ({ payload }: any) => {
+      if (!payload.summary) return;
+      upsertAssistant(payload.id, (msg) => ({ ...msg, tools: [...(msg.tools || []), payload.summary], streaming: true }));
+      setIsStreaming(true);
+    });
+
+    // Mensagem final autoritativa: substitui o texto streamado e termina o stream.
     ch.on('broadcast', { event: 'assistant_msg' }, ({ payload }: any) => {
-      setMessages((m) => [
-        ...m,
-        { id: (payload.id || uid()) + '-a', role: 'assistant', content: payload.text },
-      ]);
+      upsertAssistant(payload.id, (msg) => ({ ...msg, content: payload.text, streaming: false }));
       setIsStreaming(false);
     });
 

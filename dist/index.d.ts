@@ -5,6 +5,10 @@ interface BridgeMessage {
     id: string;
     role: 'user' | 'assistant';
     content: string;
+    /** Linhas de atividade de ferramentas (ex. "Read src/Header.tsx"), durante o stream. */
+    tools?: string[];
+    /** true enquanto ainda chegam deltas desta resposta. */
+    streaming?: boolean;
 }
 interface UseTerminalBridgeOptions {
     /** Cliente Supabase a usar. Se omitido, usa o hub Realtime partilhado (DEFAULT_HUB). */

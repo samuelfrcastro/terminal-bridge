@@ -16,11 +16,12 @@
  */
 
 import { createClient } from "@supabase/supabase-js";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import readline from "node:readline";
 
 const execFileP = promisify(execFile);
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -69,13 +70,87 @@ async function resolveRoute(route) {
   }
 }
 
-async function runClaude(prompt) {
-  const args = ["--dangerously-skip-permissions", "-p", prompt, "--output-format", "json"];
-  if (claudeSession) args.push("--resume", claudeSession);
-  if (MODEL) args.push("--model", MODEL);
-  const { stdout } = await execFileP("claude", args, { cwd: ROOT, timeout: 300_000, maxBuffer: 16 * 1024 * 1024 });
-  const res = JSON.parse(stdout);
-  return { text: res.result ?? "(sem resposta)", session: res.session_id ?? null };
+/** Encurta um caminho absoluto para relativo à raiz do projeto (UI mais limpa). */
+function shortPath(p) {
+  if (typeof p !== "string") return "";
+  return p.startsWith(ROOT) ? p.slice(ROOT.length).replace(/^\//, "") : p;
+}
+
+/** Resumo legível de uma tool call para mostrar no chat (ex. "Read src/Header.tsx"). */
+function toolSummary(name, input) {
+  const i = input || {};
+  if (i.file_path) return `${name} ${shortPath(i.file_path)}`;
+  if (i.path) return `${name} ${shortPath(i.path)}`;
+  if (i.notebook_path) return `${name} ${shortPath(i.notebook_path)}`;
+  if (i.command) return `${name} ${String(i.command).replace(/\s+/g, " ").slice(0, 70)}`;
+  if (i.pattern) return `${name} ${i.pattern}${i.path ? " " + shortPath(i.path) : ""}`;
+  if (i.url) return `${name} ${i.url}`;
+  if (i.query) return `${name} ${String(i.query).slice(0, 60)}`;
+  if (i.description) return `${name}: ${String(i.description).slice(0, 60)}`;
+  return name;
+}
+
+/**
+ * Corre o Claude Code em modo streaming (NDJSON) e chama os callbacks à medida
+ * que os eventos chegam: onText(token), onTool(resumo), onSession(id).
+ * Devolve o texto final autoritativo + session no fim. Mantém a continuidade
+ * de sessão via --resume, tal como a versão buffered.
+ */
+function runClaudeStreaming(prompt, { onText, onTool, onSession } = {}) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      "--dangerously-skip-permissions",
+      "-p", prompt,
+      "--output-format", "stream-json",
+      "--include-partial-messages",
+      "--verbose",
+    ];
+    if (claudeSession) args.push("--resume", claudeSession);
+    if (MODEL) args.push("--model", MODEL);
+
+    const child = spawn("claude", args, { cwd: ROOT, env: childEnv });
+    const rl = readline.createInterface({ input: child.stdout });
+    const killTimer = setTimeout(() => child.kill("SIGKILL"), 300_000);
+
+    let finalText = "";
+    let session = null;
+    let stderr = "";
+    child.stderr.on("data", (d) => { stderr += d.toString(); });
+
+    rl.on("line", (line) => {
+      const s = line.trim();
+      if (!s) return;
+      let ev;
+      try { ev = JSON.parse(s); } catch { return; }
+
+      if (ev.type === "system" && ev.subtype === "init") {
+        if (ev.session_id) { session = ev.session_id; onSession?.(session); }
+      } else if (ev.type === "stream_event") {
+        const e = ev.event;
+        if (e?.type === "content_block_delta" && e.delta?.type === "text_delta") {
+          onText?.(e.delta.text);
+        }
+      } else if (ev.type === "assistant" && Array.isArray(ev.message?.content)) {
+        // Blocos completos desta volta: emite as tool calls (já com input preenchido).
+        for (const block of ev.message.content) {
+          if (block.type === "tool_use") onTool?.(toolSummary(block.name, block.input));
+        }
+      } else if (ev.type === "result") {
+        if (ev.session_id) session = ev.session_id;
+        if (typeof ev.result === "string") finalText = ev.result;
+      }
+    });
+
+    child.on("error", (err) => { clearTimeout(killTimer); reject(err); });
+    child.on("close", (code) => {
+      clearTimeout(killTimer);
+      if (!finalText && code !== 0) {
+        reject(new Error(stderr.trim() || `claude saiu com código ${code}`));
+      } else {
+        resolve({ text: finalText || "(sem resposta)", session });
+      }
+    });
+  });
 }
 
 function saveInlineImage(dataUrl) {
@@ -122,12 +197,36 @@ async function handle(payload) {
     prompt = `O utilizador está ${where} na rota \`${payload.route}\` (ficheiro \`${routeFile}\`). Sem printscreen — usa o ficheiro para contexto. Pedido:\n\n${text}`;
   }
 
+  // Envios serializados → preserva a ordem (deltas de texto vs linhas de tool).
+  let sendQ = Promise.resolve();
+  const send = (event, extra) =>
+    (sendQ = sendQ
+      .then(() => channel.send({ type: "broadcast", event, payload: { id: payload.id, ...extra } }))
+      .catch(() => {}));
+
+  // Throttle dos tokens: acumula e descarrega a cada ~120ms (evita inundar o Realtime).
+  let buf = "";
+  const flush = () => { if (buf) { const chunk = buf; buf = ""; send("assistant_delta", { text: chunk }); } };
+  const flusher = setInterval(flush, 120);
+
+  const onText = (t) => { buf += t; };
+  const onTool = (summary) => { flush(); send("tool_use", { summary }); console.log(`\x1b[90m   ▸ ${summary}\x1b[0m`); };
+
   try {
-    const { text: answer, session } = await runClaude(prompt);
+    const { text: answer, session } = await runClaudeStreaming(prompt, {
+      onText,
+      onTool,
+      onSession: (s) => { claudeSession = s; },
+    });
     if (session) claudeSession = session;
+    clearInterval(flusher);
+    flush();
+    await sendQ;
     console.log(`\x1b[32m[claude→app]\x1b[0m (${((Date.now() - t0) / 1000).toFixed(1)}s) ${answer}\n`);
-    await channel.send({ type: "broadcast", event: "assistant_msg", payload: { id: payload.id, text: answer, session: claudeSession, shot: !!shot } });
+    // Mensagem final autoritativa: o cliente substitui o texto streamado (corrige deltas perdidos).
+    await channel.send({ type: "broadcast", event: "assistant_msg", payload: { id: payload.id, text: answer, session: claudeSession, shot: !!shot, streamed: true } });
   } catch (e) {
+    clearInterval(flusher);
     const msg = `Erro ao correr o Claude Code: ${e?.message || e}`;
     console.error(`\x1b[31m[bridge]\x1b[0m ${msg}`);
     await channel.send({ type: "broadcast", event: "assistant_msg", payload: { id: payload.id, text: "❌ " + msg } });
