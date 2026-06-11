@@ -28,14 +28,29 @@ switch (cmd) {
   case "release":
     run(process.execPath, [join(PKG, "scripts", "release.mjs"), ...rest]);
     break;
+  case "attach": {
+    // Liga a uma sessão tmux que mostra o daemon ao vivo (tail do log). Cria-a se
+    // não existir (attach-or-create), no socket default — o mesmo do `tmux attach`.
+    const site = rest[0];
+    if (!site) {
+      console.error("Uso: terminal-bridge attach <site>   (ex: terminal-bridge attach grupo-jantar)");
+      console.error("Depois, sair sem matar: Ctrl-b d. Re-ligar: tmux attach -t tb-<site>");
+      process.exit(1);
+    }
+    const session = `tb-${site}`;
+    const log = `/tmp/terminal-bridge-${site}.log`;
+    run("tmux", ["new-session", "-A", "-s", session, `tail -n 200 -F '${log}'`]);
+    break;
+  }
   default:
     console.log(`terminal-bridge — liga o chat de um site ao Claude Code local.
 
 Uso:
-  terminal-bridge daemon     Corre o daemon (lê .env.agent do site)
-  terminal-bridge install    Instala o daemon como serviço (LaunchAgent)
-  terminal-bridge page ...   which-page: resolve rota/printscreen
-  terminal-bridge release    Propaga a nova versão a todos os sites (sites.json)
+  terminal-bridge daemon       Corre o daemon (lê .env.agent do site)
+  terminal-bridge install      Instala o daemon como serviço (LaunchAgent)
+  terminal-bridge attach <s>   Vê o daemon ao vivo numa sessão tmux (Ctrl-b d p/ sair)
+  terminal-bridge page ...     which-page: resolve rota/printscreen
+  terminal-bridge release      Propaga a nova versão a todos os sites (sites.json)
 `);
     process.exit(cmd ? 1 : 0);
 }
