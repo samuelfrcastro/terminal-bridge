@@ -36,6 +36,11 @@ const CHANNEL = process.env.BRIDGE_CHANNEL || "terminal-bridge";
 const MODEL = process.env.BRIDGE_MODEL || "";
 const SECRET = process.env.BRIDGE_SECRET || "";
 
+// Notificações ao owner: ligadas por defeito (BRIDGE_NOTIFY=0 desliga).
+const NOTIFY = process.env.BRIDGE_NOTIFY !== "0";
+const TG_TOKEN = process.env.BRIDGE_TELEGRAM_BOT_TOKEN || "";
+const TG_CHAT = process.env.BRIDGE_TELEGRAM_CHAT_ID || "";
+
 if (!SUPABASE_URL || !SERVICE_KEY) {
   console.error("[bridge] FATAL: SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY são obrigatórias (.env.agent).");
   process.exit(1);
@@ -66,6 +71,39 @@ function verifySignature(payload) {
   seenIds.set(id, ts);
   if (seenIds.size > 1000) for (const [k, v] of seenIds) if (Date.now() - v > SIG_WINDOW_MS) seenIds.delete(k);
   return true;
+}
+
+/**
+ * Avisa o owner que há atividade no chat: notificação nativa do macOS e, se
+ * configurado, mensagem no Telegram. Fire-and-forget — nunca bloqueia o handler.
+ * Desliga-se com BRIDGE_NOTIFY=0.
+ */
+function notify(title, message) {
+  if (!NOTIFY) return;
+  const body = String(message || "").replace(/\s+/g, " ").slice(0, 200);
+
+  // macOS: passa título/corpo como argv (sem escapes frágeis dentro do AppleScript).
+  if (process.platform === "darwin") {
+    execFile(
+      "osascript",
+      [
+        "-e", "on run argv",
+        "-e", 'display notification (item 1 of argv) with title (item 2 of argv) sound name "Glass"',
+        "-e", "end run",
+        "--", body, title,
+      ],
+      () => {}
+    );
+  }
+
+  // Telegram opcional (só se token + chat id estiverem definidos).
+  if (TG_TOKEN && TG_CHAT) {
+    fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: TG_CHAT, text: `${title}\n${body}`, disable_notification: false }),
+    }).catch(() => {});
+  }
 }
 
 const supabase = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
@@ -212,6 +250,9 @@ async function handle(payload) {
     return;
   }
 
+  // Avisa o owner que chegou uma mensagem nova no chat deste site.
+  notify(`💬 ${CHANNEL}`, text);
+
   if (busy) {
     await channel.send({ type: "broadcast", event: "assistant_msg", payload: { id: payload.id, text: "⏳ Ainda estou a tratar do pedido anterior — aguarda um momento." } });
     return;
@@ -266,6 +307,7 @@ async function handle(payload) {
     flush();
     await sendQ;
     console.log(`\x1b[32m[claude→app]\x1b[0m (${((Date.now() - t0) / 1000).toFixed(1)}s) ${answer}\n`);
+    notify(`✅ ${CHANNEL}`, answer);
     // Mensagem final autoritativa: o cliente substitui o texto streamado (corrige deltas perdidos).
     await channel.send({ type: "broadcast", event: "assistant_msg", payload: { id: payload.id, text: answer, session: claudeSession, shot: !!shot, streamed: true } });
   } catch (e) {

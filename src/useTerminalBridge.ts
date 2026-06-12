@@ -32,6 +32,8 @@ export interface UseTerminalBridgeOptions {
   enabled?: boolean;
   /** No telemóvel, capturar a própria página e enviá-la ao daemon (default true). */
   captureMobileScreen?: boolean;
+  /** Mostrar notificações do browser em mensagens novas (default true; precisa de permissão). */
+  notify?: boolean;
 }
 
 export interface TerminalBridge {
@@ -46,6 +48,14 @@ export interface TerminalBridge {
   unlock: (code: string) => void;
   /** Esquece o código guardado (volta a trancar) — para corrigir um código errado. */
   relock: () => void;
+  /** Estado da permissão de notificações do browser ('unsupported' se indisponível). */
+  notificationPermission: NotificationPermission | 'unsupported';
+  /** true quando as notificações estão activas (permissão concedida + ligadas). */
+  notificationsOn: boolean;
+  /** Pede permissão ao browser e liga as notificações. */
+  enableNotifications: () => Promise<void>;
+  /** Desliga as notificações (mantém a permissão concedida). */
+  disableNotifications: () => void;
 }
 
 const uid = () =>
@@ -62,6 +72,43 @@ const readSecret = (channel: string): string => {
     return '';
   }
 };
+
+/** Notificações disponíveis neste ambiente (browser com a API Notification). */
+const notifySupported = () => typeof window !== 'undefined' && 'Notification' in window;
+
+/** Preferência de notificações (ligadas/desligadas), por canal — default ligadas. */
+const notifyPrefKey = (channel: string) => `tb-notify:${channel}`;
+const readNotifyPref = (channel: string): boolean => {
+  try {
+    if (typeof window === 'undefined') return true;
+    return window.localStorage.getItem(notifyPrefKey(channel)) !== '0';
+  } catch {
+    return true;
+  }
+};
+const writeNotifyPref = (channel: string, on: boolean) => {
+  try {
+    if (typeof window !== 'undefined') window.localStorage.setItem(notifyPrefKey(channel), on ? '1' : '0');
+  } catch {}
+};
+
+/** Beep curto via WebAudio (reutiliza o AudioContext). Falha em silêncio. */
+let audioCtx: AudioContext | null = null;
+function beep() {
+  try {
+    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctx) return;
+    audioCtx = audioCtx || new Ctx();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.frequency.value = 880;
+    gain.gain.value = 0.05;
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.12);
+  } catch {}
+}
 
 /** HMAC-SHA256(secret, msg) em hex, via WebCrypto. Assina cada mensagem sem expor o código. */
 async function hmacHex(secret: string, msg: string): Promise<string> {
@@ -99,7 +146,7 @@ async function captureScreenSmall(maxB64 = 180_000): Promise<string | null> {
  * Online/offline por Presence (sem mensagens periódicas). Genérico: serve qualquer site.
  */
 export function useTerminalBridge(opts: UseTerminalBridgeOptions = {}): TerminalBridge {
-  const { supabase, channel = 'terminal-bridge', enabled = true, captureMobileScreen = true } = opts;
+  const { supabase, channel = 'terminal-bridge', enabled = true, captureMobileScreen = true, notify = true } = opts;
 
   // Usa o supabase fornecido, ou cria (uma vez) um client do hub partilhado.
   const client = useMemo(
@@ -127,6 +174,75 @@ export function useTerminalBridge(opts: UseTerminalBridgeOptions = {}): Terminal
     try { if (typeof window !== 'undefined') window.localStorage.removeItem(secretKey(channel)); } catch {}
     setSecret('');
   }, [channel]);
+
+  // Notificações do browser: permissão + toggle (guardado por canal).
+  const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>(() =>
+    notifySupported() ? Notification.permission : 'unsupported'
+  );
+  const [notifyOn, setNotifyOn] = useState<boolean>(() => readNotifyPref(channel));
+  useEffect(() => {
+    setPermission(notifySupported() ? Notification.permission : 'unsupported');
+    setNotifyOn(readNotifyPref(channel));
+  }, [channel]);
+
+  const notificationsOn = notify && notifyOn && permission === 'granted';
+
+  const enableNotifications = useCallback(async () => {
+    if (!notifySupported()) return;
+    let p = Notification.permission;
+    if (p === 'default') {
+      try { p = await Notification.requestPermission(); } catch {}
+    }
+    setPermission(p);
+    if (p === 'granted') { setNotifyOn(true); writeNotifyPref(channel, true); }
+  }, [channel]);
+
+  const disableNotifications = useCallback(() => {
+    setNotifyOn(false);
+    writeNotifyPref(channel, false);
+  }, [channel]);
+
+  // Flash do título da aba até voltar ao foco — chama a atenção mesmo noutro separador.
+  const flashRef = useRef<{ timer: ReturnType<typeof setInterval>; original: string } | null>(null);
+  const stopFlash = useCallback(() => {
+    if (flashRef.current) {
+      clearInterval(flashRef.current.timer);
+      document.title = flashRef.current.original;
+      flashRef.current = null;
+    }
+  }, []);
+  const startFlash = useCallback((label: string) => {
+    if (typeof document === 'undefined' || flashRef.current) return;
+    const original = document.title;
+    let on = false;
+    const timer = setInterval(() => { document.title = (on = !on) ? label : original; }, 1000);
+    flashRef.current = { timer, original };
+  }, []);
+  useEffect(() => {
+    const onVisible = () => { if (typeof document !== 'undefined' && !document.hidden) stopFlash(); };
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisible);
+    if (typeof window !== 'undefined') window.addEventListener('focus', onVisible);
+    return () => {
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible);
+      if (typeof window !== 'undefined') window.removeEventListener('focus', onVisible);
+      stopFlash();
+    };
+  }, [stopFlash]);
+
+  // Dispara a notificação (só com a aba em segundo plano, para não duplicar o que já se vê).
+  const pushNotification = useCallback(
+    (title: string, body: string) => {
+      if (!notificationsOn) return;
+      if (typeof document !== 'undefined' && !document.hidden) return;
+      try { new Notification(title, { body: (body || '').slice(0, 180), tag: channel }); } catch {}
+      beep();
+      startFlash('💬 ' + title);
+    },
+    [notificationsOn, channel, startFlash]
+  );
+  // Ref para os listeners do canal usarem sempre a versão actual sem re-subscrever.
+  const notifyRef = useRef(pushNotification);
+  notifyRef.current = pushNotification;
 
   useEffect(() => {
     if (!enabled) return;
@@ -165,6 +281,15 @@ export function useTerminalBridge(opts: UseTerminalBridgeOptions = {}): Terminal
     ch.on('broadcast', { event: 'assistant_msg' }, ({ payload }: any) => {
       upsertAssistant(payload.id, (msg) => ({ ...msg, content: payload.text, streaming: false }));
       setIsStreaming(false);
+      notifyRef.current('Resposta do terminal', payload.text || '');
+    });
+
+    // Mensagem de outro visitante no mesmo chat (self:false → nunca o eco do próprio).
+    // Mostra-a também na lista, para o chat ficar coerente entre quem o estiver a ver.
+    ch.on('broadcast', { event: 'user_msg' }, ({ payload }: any) => {
+      if (!payload?.id) return;
+      setMessages((m) => (m.some((x) => x.id === payload.id) ? m : [...m, { id: payload.id, role: 'user', content: payload.text || '' }]));
+      notifyRef.current('Nova mensagem no chat', payload.text || '');
     });
 
     // Presence: online = o daemon "terminal" está presente. Sem batimentos periódicos.
@@ -229,5 +354,17 @@ export function useTerminalBridge(opts: UseTerminalBridgeOptions = {}): Terminal
     [isStreaming, online, captureMobileScreen, secret]
   );
 
-  return { messages, isStreaming, online, sendMessage, locked: !secret, unlock, relock };
+  return {
+    messages,
+    isStreaming,
+    online,
+    sendMessage,
+    locked: !secret,
+    unlock,
+    relock,
+    notificationPermission: permission,
+    notificationsOn,
+    enableNotifications,
+    disableNotifications,
+  };
 }

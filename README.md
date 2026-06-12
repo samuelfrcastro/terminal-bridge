@@ -102,3 +102,13 @@ npx terminal-bridge release        # atualiza o package + deploy de todos
 | `BRIDGE_MODEL` | (do CLI) | modelo do Claude Code |
 | `BRIDGE_FLAG` | `claude` | marca da aba a capturar (`?claude=1`) |
 | `BRIDGE_APP_HOSTS` | localhost/lovable/vercel | regex de hosts da app |
+| `BRIDGE_NOTIFY` | `1` | notificar o owner em atividade do chat (`0` desliga) |
+| `BRIDGE_TELEGRAM_BOT_TOKEN` | — | (opcional) token do bot p/ notificar no Telegram |
+| `BRIDGE_TELEGRAM_CHAT_ID` | — | (opcional) chat id de destino no Telegram |
+
+## Notificações (v2.2+)
+
+Sempre que há atividade no chat de um site, és avisado nos dois lados:
+
+- **Na tua máquina (daemon):** notificação nativa do macOS (com som) quando **chega uma mensagem** de um visitante e quando o **Claude termina a resposta**. Se definires `BRIDGE_TELEGRAM_BOT_TOKEN` + `BRIDGE_TELEGRAM_CHAT_ID`, também recebes no Telegram. Desliga com `BRIDGE_NOTIFY=0`.
+- **No browser do site:** o `<TerminalChat>` usa a Web Notifications API. Com a aba em segundo plano, mostra uma notificação do browser, toca um beep e faz o título da aba piscar — em respostas do Claude e em mensagens de outros visitantes do mesmo chat. O utilizador liga/desliga no 🔔/🔕 do cabeçalho (a preferência fica no `localStorage` por canal). Passa `notify={false}` ao `<TerminalChat>`/`useTerminalBridge` para desativar de todo.

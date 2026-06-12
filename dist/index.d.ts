@@ -19,6 +19,8 @@ interface UseTerminalBridgeOptions {
     enabled?: boolean;
     /** No telemóvel, capturar a própria página e enviá-la ao daemon (default true). */
     captureMobileScreen?: boolean;
+    /** Mostrar notificações do browser em mensagens novas (default true; precisa de permissão). */
+    notify?: boolean;
 }
 interface TerminalBridge {
     messages: BridgeMessage[];
@@ -32,6 +34,14 @@ interface TerminalBridge {
     unlock: (code: string) => void;
     /** Esquece o código guardado (volta a trancar) — para corrigir um código errado. */
     relock: () => void;
+    /** Estado da permissão de notificações do browser ('unsupported' se indisponível). */
+    notificationPermission: NotificationPermission | 'unsupported';
+    /** true quando as notificações estão activas (permissão concedida + ligadas). */
+    notificationsOn: boolean;
+    /** Pede permissão ao browser e liga as notificações. */
+    enableNotifications: () => Promise<void>;
+    /** Desliga as notificações (mantém a permissão concedida). */
+    disableNotifications: () => void;
 }
 /**
  * Liga o chat ao Claude Code que corre na máquina do owner, via Supabase Realtime.

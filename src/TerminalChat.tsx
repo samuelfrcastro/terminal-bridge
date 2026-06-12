@@ -27,7 +27,19 @@ export function TerminalChat({
   title = 'Terminal',
   placeholder = 'Escreve uma mensagem…',
 }: TerminalChatProps) {
-  const { messages, isStreaming, online, sendMessage, locked, unlock, relock } = useTerminalBridge({ supabase, channel, enabled });
+  const {
+    messages,
+    isStreaming,
+    online,
+    sendMessage,
+    locked,
+    unlock,
+    relock,
+    notificationPermission,
+    notificationsOn,
+    enableNotifications,
+    disableNotifications,
+  } = useTerminalBridge({ supabase, channel, enabled });
   const [input, setInput] = useState('');
   const [code, setCode] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
@@ -96,6 +108,29 @@ export function TerminalChat({
           />
           {online ? 'online' : 'offline'}
         </span>
+        {notificationPermission !== 'unsupported' && (
+          <button
+            onClick={() => (notificationsOn ? disableNotifications() : void enableNotifications())}
+            title={
+              notificationPermission === 'denied'
+                ? 'Notificações bloqueadas no browser — ativa-as nas definições do site'
+                : notificationsOn
+                ? 'Notificações ligadas — clica para desligar'
+                : 'Ligar notificações de novas mensagens'
+            }
+            style={{
+              marginLeft: 4,
+              background: 'transparent',
+              border: 'none',
+              color: notificationsOn ? '#22c55e' : '#6b7280',
+              cursor: 'pointer',
+              fontSize: 13,
+              padding: 0,
+            }}
+          >
+            {notificationsOn ? '🔔' : '🔕'}
+          </button>
+        )}
         {!locked && (
           <button
             onClick={relock}

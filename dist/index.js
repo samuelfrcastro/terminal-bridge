@@ -14,6 +14,39 @@ var readSecret = (channel) => {
     return "";
   }
 };
+var notifySupported = () => typeof window !== "undefined" && "Notification" in window;
+var notifyPrefKey = (channel) => `tb-notify:${channel}`;
+var readNotifyPref = (channel) => {
+  try {
+    if (typeof window === "undefined") return true;
+    return window.localStorage.getItem(notifyPrefKey(channel)) !== "0";
+  } catch {
+    return true;
+  }
+};
+var writeNotifyPref = (channel, on) => {
+  try {
+    if (typeof window !== "undefined") window.localStorage.setItem(notifyPrefKey(channel), on ? "1" : "0");
+  } catch {
+  }
+};
+var audioCtx = null;
+function beep() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    audioCtx = audioCtx || new Ctx();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.frequency.value = 880;
+    gain.gain.value = 0.05;
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.12);
+  } catch {
+  }
+}
 async function hmacHex(secret, msg) {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
@@ -41,7 +74,7 @@ async function captureScreenSmall(maxB64 = 18e4) {
   }
 }
 function useTerminalBridge(opts = {}) {
-  const { supabase, channel = "terminal-bridge", enabled = true, captureMobileScreen = true } = opts;
+  const { supabase, channel = "terminal-bridge", enabled = true, captureMobileScreen = true, notify = true } = opts;
   const client = useMemo(
     () => supabase ?? createClient(DEFAULT_HUB.url, DEFAULT_HUB.anonKey, { auth: { persistSession: false } }),
     [supabase]
@@ -72,6 +105,78 @@ function useTerminalBridge(opts = {}) {
     }
     setSecret("");
   }, [channel]);
+  const [permission, setPermission] = useState(
+    () => notifySupported() ? Notification.permission : "unsupported"
+  );
+  const [notifyOn, setNotifyOn] = useState(() => readNotifyPref(channel));
+  useEffect(() => {
+    setPermission(notifySupported() ? Notification.permission : "unsupported");
+    setNotifyOn(readNotifyPref(channel));
+  }, [channel]);
+  const notificationsOn = notify && notifyOn && permission === "granted";
+  const enableNotifications = useCallback(async () => {
+    if (!notifySupported()) return;
+    let p = Notification.permission;
+    if (p === "default") {
+      try {
+        p = await Notification.requestPermission();
+      } catch {
+      }
+    }
+    setPermission(p);
+    if (p === "granted") {
+      setNotifyOn(true);
+      writeNotifyPref(channel, true);
+    }
+  }, [channel]);
+  const disableNotifications = useCallback(() => {
+    setNotifyOn(false);
+    writeNotifyPref(channel, false);
+  }, [channel]);
+  const flashRef = useRef(null);
+  const stopFlash = useCallback(() => {
+    if (flashRef.current) {
+      clearInterval(flashRef.current.timer);
+      document.title = flashRef.current.original;
+      flashRef.current = null;
+    }
+  }, []);
+  const startFlash = useCallback((label) => {
+    if (typeof document === "undefined" || flashRef.current) return;
+    const original = document.title;
+    let on = false;
+    const timer = setInterval(() => {
+      document.title = (on = !on) ? label : original;
+    }, 1e3);
+    flashRef.current = { timer, original };
+  }, []);
+  useEffect(() => {
+    const onVisible = () => {
+      if (typeof document !== "undefined" && !document.hidden) stopFlash();
+    };
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisible);
+    if (typeof window !== "undefined") window.addEventListener("focus", onVisible);
+    return () => {
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisible);
+      if (typeof window !== "undefined") window.removeEventListener("focus", onVisible);
+      stopFlash();
+    };
+  }, [stopFlash]);
+  const pushNotification = useCallback(
+    (title, body) => {
+      if (!notificationsOn) return;
+      if (typeof document !== "undefined" && !document.hidden) return;
+      try {
+        new Notification(title, { body: (body || "").slice(0, 180), tag: channel });
+      } catch {
+      }
+      beep();
+      startFlash("\u{1F4AC} " + title);
+    },
+    [notificationsOn, channel, startFlash]
+  );
+  const notifyRef = useRef(pushNotification);
+  notifyRef.current = pushNotification;
   useEffect(() => {
     if (!enabled) return;
     const ch = client.channel(channel, { config: { broadcast: { self: false } } });
@@ -98,6 +203,12 @@ function useTerminalBridge(opts = {}) {
     ch.on("broadcast", { event: "assistant_msg" }, ({ payload }) => {
       upsertAssistant(payload.id, (msg) => ({ ...msg, content: payload.text, streaming: false }));
       setIsStreaming(false);
+      notifyRef.current("Resposta do terminal", payload.text || "");
+    });
+    ch.on("broadcast", { event: "user_msg" }, ({ payload }) => {
+      if (!payload?.id) return;
+      setMessages((m) => m.some((x) => x.id === payload.id) ? m : [...m, { id: payload.id, role: "user", content: payload.text || "" }]);
+      notifyRef.current("Nova mensagem no chat", payload.text || "");
     });
     const refresh = () => {
       const state = ch.presenceState();
@@ -152,7 +263,19 @@ function useTerminalBridge(opts = {}) {
     },
     [isStreaming, online, captureMobileScreen, secret]
   );
-  return { messages, isStreaming, online, sendMessage, locked: !secret, unlock, relock };
+  return {
+    messages,
+    isStreaming,
+    online,
+    sendMessage,
+    locked: !secret,
+    unlock,
+    relock,
+    notificationPermission: permission,
+    notificationsOn,
+    enableNotifications,
+    disableNotifications
+  };
 }
 
 // src/TerminalChat.tsx
@@ -165,7 +288,19 @@ function TerminalChat({
   title = "Terminal",
   placeholder = "Escreve uma mensagem\u2026"
 }) {
-  const { messages, isStreaming, online, sendMessage, locked, unlock, relock } = useTerminalBridge({ supabase, channel, enabled });
+  const {
+    messages,
+    isStreaming,
+    online,
+    sendMessage,
+    locked,
+    unlock,
+    relock,
+    notificationPermission,
+    notificationsOn,
+    enableNotifications,
+    disableNotifications
+  } = useTerminalBridge({ supabase, channel, enabled });
   const [input, setInput] = useState2("");
   const [code, setCode] = useState2("");
   const listRef = useRef2(null);
@@ -237,6 +372,23 @@ function TerminalChat({
                     ),
                     online ? "online" : "offline"
                   ]
+                }
+              ),
+              notificationPermission !== "unsupported" && /* @__PURE__ */ jsx(
+                "button",
+                {
+                  onClick: () => notificationsOn ? disableNotifications() : void enableNotifications(),
+                  title: notificationPermission === "denied" ? "Notifica\xE7\xF5es bloqueadas no browser \u2014 ativa-as nas defini\xE7\xF5es do site" : notificationsOn ? "Notifica\xE7\xF5es ligadas \u2014 clica para desligar" : "Ligar notifica\xE7\xF5es de novas mensagens",
+                  style: {
+                    marginLeft: 4,
+                    background: "transparent",
+                    border: "none",
+                    color: notificationsOn ? "#22c55e" : "#6b7280",
+                    cursor: "pointer",
+                    fontSize: 13,
+                    padding: 0
+                  },
+                  children: notificationsOn ? "\u{1F514}" : "\u{1F515}"
                 }
               ),
               !locked && /* @__PURE__ */ jsx(
