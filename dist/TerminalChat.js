@@ -1,3 +1,6 @@
+// src/TerminalChat.tsx
+import { useEffect as useEffect2, useRef as useRef2, useState as useState2 } from "react";
+
 // src/useTerminalBridge.ts
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
@@ -231,7 +234,6 @@ function useTerminalBridge(opts = {}) {
 }
 
 // src/TerminalChat.tsx
-import { useEffect as useEffect2, useRef as useRef2, useState as useState2 } from "react";
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 function TerminalChat({
   supabase,
@@ -417,7 +419,6 @@ function TerminalChat({
   );
 }
 export {
-  TerminalChat,
-  useTerminalBridge
+  TerminalChat
 };
-//# sourceMappingURL=index.js.map
+//# sourceMappingURL=TerminalChat.js.map

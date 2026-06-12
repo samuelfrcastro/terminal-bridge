@@ -1,6 +1,43 @@
+"use strict";
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+// src/TerminalChat.tsx
+var TerminalChat_exports = {};
+__export(TerminalChat_exports, {
+  TerminalChat: () => TerminalChat
+});
+module.exports = __toCommonJS(TerminalChat_exports);
+var import_react2 = require("react");
+
 // src/useTerminalBridge.ts
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
+var import_react = require("react");
+var import_supabase_js = require("@supabase/supabase-js");
 var DEFAULT_HUB = {
   url: "https://pzlakqqnkvogtfvippvx.supabase.co",
   anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB6bGFrcXFua3ZvZ3RmdmlwcHZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NTQzOTYsImV4cCI6MjA5MzAzMDM5Nn0.uHbz-Ft4MCLbcMPAS-tFMQhDny7XCkevUD-fBgW0euQ"
@@ -61,24 +98,24 @@ async function captureScreenSmall(maxB64 = 18e4) {
 }
 function useTerminalBridge(opts = {}) {
   const { supabase, channel = "terminal-bridge", enabled = true, captureMobileScreen = true, notify = true } = opts;
-  const client = useMemo(
-    () => supabase ?? createClient(DEFAULT_HUB.url, DEFAULT_HUB.anonKey, { auth: { persistSession: false } }),
+  const client = (0, import_react.useMemo)(
+    () => supabase ?? (0, import_supabase_js.createClient)(DEFAULT_HUB.url, DEFAULT_HUB.anonKey, { auth: { persistSession: false } }),
     [supabase]
   );
-  const [messages, setMessages] = useState([]);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [online, setOnline] = useState(false);
-  const channelRef = useRef(null);
-  const [permission, setPermission] = useState(
+  const [messages, setMessages] = (0, import_react.useState)([]);
+  const [isStreaming, setIsStreaming] = (0, import_react.useState)(false);
+  const [online, setOnline] = (0, import_react.useState)(false);
+  const channelRef = (0, import_react.useRef)(null);
+  const [permission, setPermission] = (0, import_react.useState)(
     () => notifySupported() ? Notification.permission : "unsupported"
   );
-  const [notifyOn, setNotifyOn] = useState(() => readNotifyPref(channel));
-  useEffect(() => {
+  const [notifyOn, setNotifyOn] = (0, import_react.useState)(() => readNotifyPref(channel));
+  (0, import_react.useEffect)(() => {
     setPermission(notifySupported() ? Notification.permission : "unsupported");
     setNotifyOn(readNotifyPref(channel));
   }, [channel]);
   const notificationsOn = notify && notifyOn && permission === "granted";
-  const enableNotifications = useCallback(async () => {
+  const enableNotifications = (0, import_react.useCallback)(async () => {
     if (!notifySupported()) return;
     let p = Notification.permission;
     if (p === "default") {
@@ -93,19 +130,19 @@ function useTerminalBridge(opts = {}) {
       writeNotifyPref(channel, true);
     }
   }, [channel]);
-  const disableNotifications = useCallback(() => {
+  const disableNotifications = (0, import_react.useCallback)(() => {
     setNotifyOn(false);
     writeNotifyPref(channel, false);
   }, [channel]);
-  const flashRef = useRef(null);
-  const stopFlash = useCallback(() => {
+  const flashRef = (0, import_react.useRef)(null);
+  const stopFlash = (0, import_react.useCallback)(() => {
     if (flashRef.current) {
       clearInterval(flashRef.current.timer);
       document.title = flashRef.current.original;
       flashRef.current = null;
     }
   }, []);
-  const startFlash = useCallback((label) => {
+  const startFlash = (0, import_react.useCallback)((label) => {
     if (typeof document === "undefined" || flashRef.current) return;
     const original = document.title;
     let on = false;
@@ -114,7 +151,7 @@ function useTerminalBridge(opts = {}) {
     }, 1e3);
     flashRef.current = { timer, original };
   }, []);
-  useEffect(() => {
+  (0, import_react.useEffect)(() => {
     const onVisible = () => {
       if (typeof document !== "undefined" && !document.hidden) stopFlash();
     };
@@ -126,7 +163,7 @@ function useTerminalBridge(opts = {}) {
       stopFlash();
     };
   }, [stopFlash]);
-  const pushNotification = useCallback(
+  const pushNotification = (0, import_react.useCallback)(
     (title, body) => {
       if (!notificationsOn) return;
       if (typeof document !== "undefined" && !document.hidden) return;
@@ -139,9 +176,9 @@ function useTerminalBridge(opts = {}) {
     },
     [notificationsOn, channel, startFlash]
   );
-  const notifyRef = useRef(pushNotification);
+  const notifyRef = (0, import_react.useRef)(pushNotification);
   notifyRef.current = pushNotification;
-  useEffect(() => {
+  (0, import_react.useEffect)(() => {
     if (!enabled) return;
     const ch = client.channel(channel, { config: { broadcast: { self: false } } });
     const akey = (id) => (id || uid()) + "-a";
@@ -189,7 +226,7 @@ function useTerminalBridge(opts = {}) {
       setOnline(false);
     };
   }, [client, channel, enabled]);
-  const sendMessage = useCallback(
+  const sendMessage = (0, import_react.useCallback)(
     async (content) => {
       const text = content.trim();
       if (!text || isStreaming) return;
@@ -231,8 +268,7 @@ function useTerminalBridge(opts = {}) {
 }
 
 // src/TerminalChat.tsx
-import { useEffect as useEffect2, useRef as useRef2, useState as useState2 } from "react";
-import { Fragment, jsx, jsxs } from "react/jsx-runtime";
+var import_jsx_runtime = require("react/jsx-runtime");
 function TerminalChat({
   supabase,
   channel,
@@ -250,9 +286,9 @@ function TerminalChat({
     enableNotifications,
     disableNotifications
   } = useTerminalBridge({ supabase, channel, enabled });
-  const [input, setInput] = useState2("");
-  const listRef = useRef2(null);
-  useEffect2(() => {
+  const [input, setInput] = (0, import_react2.useState)("");
+  const listRef = (0, import_react2.useRef)(null);
+  (0, import_react2.useEffect)(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, isStreaming]);
   const submit = () => {
@@ -261,7 +297,7 @@ function TerminalChat({
     setInput("");
     void sendMessage(t);
   };
-  return /* @__PURE__ */ jsxs(
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
     "div",
     {
       "data-terminal-bridge-ignore": "true",
@@ -275,8 +311,8 @@ function TerminalChat({
         fontSize: 14
       },
       children: [
-        /* @__PURE__ */ jsx("style", { children: "@keyframes tb-blink{0%,49%{opacity:1}50%,100%{opacity:0}}.tb-caret{animation:tb-blink 1s step-end infinite;margin-left:1px}" }),
-        /* @__PURE__ */ jsxs(
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("style", { children: "@keyframes tb-blink{0%,49%{opacity:1}50%,100%{opacity:0}}.tb-caret{animation:tb-blink 1s step-end infinite;margin-left:1px}" }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
           "div",
           {
             style: {
@@ -287,8 +323,8 @@ function TerminalChat({
               borderBottom: "1px solid #1f2937"
             },
             children: [
-              /* @__PURE__ */ jsx("span", { style: { fontWeight: 600 }, children: title }),
-              /* @__PURE__ */ jsxs(
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: { fontWeight: 600 }, children: title }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
                 "span",
                 {
                   style: {
@@ -300,7 +336,7 @@ function TerminalChat({
                     color: online ? "#22c55e" : "#ef4444"
                   },
                   children: [
-                    /* @__PURE__ */ jsx(
+                    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
                       "span",
                       {
                         style: {
@@ -316,7 +352,7 @@ function TerminalChat({
                   ]
                 }
               ),
-              notificationPermission !== "unsupported" && /* @__PURE__ */ jsx(
+              notificationPermission !== "unsupported" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
                 "button",
                 {
                   onClick: () => notificationsOn ? disableNotifications() : void enableNotifications(),
@@ -336,10 +372,10 @@ function TerminalChat({
             ]
           }
         ),
-        /* @__PURE__ */ jsxs(Fragment, { children: [
-          /* @__PURE__ */ jsxs("div", { ref: listRef, style: { flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 }, children: [
-            messages.length === 0 && /* @__PURE__ */ jsx("p", { style: { color: "#6b7280", textAlign: "center", marginTop: 24 }, children: online ? "Liga-te ao Claude Code da tua m\xE1quina. Escreve abaixo." : "\xC0 espera do terminal\u2026" }),
-            messages.map((m) => /* @__PURE__ */ jsxs(
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { ref: listRef, style: { flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 }, children: [
+            messages.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { style: { color: "#6b7280", textAlign: "center", marginTop: 24 }, children: online ? "Liga-te ao Claude Code da tua m\xE1quina. Escreve abaixo." : "\xC0 espera do terminal\u2026" }),
+            messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
               "div",
               {
                 style: {
@@ -353,20 +389,20 @@ function TerminalChat({
                   color: m.role === "user" ? "#fff" : "#e5e7eb"
                 },
                 children: [
-                  m.tools && m.tools.length > 0 && /* @__PURE__ */ jsx("div", { style: { marginBottom: m.content ? 6 : 0, display: "flex", flexDirection: "column", gap: 2 }, children: m.tools.map((t, i) => /* @__PURE__ */ jsxs("span", { style: { color: "#9ca3af", fontSize: 12, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }, children: [
+                  m.tools && m.tools.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { marginBottom: m.content ? 6 : 0, display: "flex", flexDirection: "column", gap: 2 }, children: m.tools.map((t, i) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { style: { color: "#9ca3af", fontSize: 12, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }, children: [
                     "\u25B8 ",
                     t
                   ] }, i)) }),
                   m.content,
-                  m.streaming && /* @__PURE__ */ jsx("span", { style: { opacity: 0.6 }, className: "tb-caret", children: "\u258B" })
+                  m.streaming && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: { opacity: 0.6 }, className: "tb-caret", children: "\u258B" })
                 ]
               },
               m.id
             )),
-            isStreaming && !messages.some((m) => m.streaming) && /* @__PURE__ */ jsx("div", { style: { alignSelf: "flex-start", color: "#9ca3af", fontStyle: "italic" }, children: "a pensar\u2026" })
+            isStreaming && !messages.some((m) => m.streaming) && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { alignSelf: "flex-start", color: "#9ca3af", fontStyle: "italic" }, children: "a pensar\u2026" })
           ] }),
-          /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, padding: 10, borderTop: "1px solid #1f2937" }, children: [
-            /* @__PURE__ */ jsx(
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: { display: "flex", gap: 8, padding: 10, borderTop: "1px solid #1f2937" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
               "textarea",
               {
                 value: input,
@@ -393,7 +429,7 @@ function TerminalChat({
                 }
               }
             ),
-            /* @__PURE__ */ jsx(
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
               "button",
               {
                 onClick: submit,
@@ -416,8 +452,8 @@ function TerminalChat({
     }
   );
 }
-export {
-  TerminalChat,
-  useTerminalBridge
-};
-//# sourceMappingURL=index.js.map
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  TerminalChat
+});
+//# sourceMappingURL=TerminalChat.cjs.map

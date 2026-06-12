@@ -23,7 +23,6 @@ import { writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
-import { createHmac, timingSafeEqual } from "node:crypto";
 
 const execFileP = promisify(execFile);
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -34,7 +33,6 @@ const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const ROOT = process.env.AGENT_PROJECT_ROOT || process.cwd();
 const CHANNEL = process.env.BRIDGE_CHANNEL || "terminal-bridge";
 const MODEL = process.env.BRIDGE_MODEL || "";
-const SECRET = process.env.BRIDGE_SECRET || "";
 
 // Notificações ao owner: ligadas por defeito (BRIDGE_NOTIFY=0 desliga).
 const NOTIFY = process.env.BRIDGE_NOTIFY !== "0";
@@ -44,33 +42,6 @@ const TG_CHAT = process.env.BRIDGE_TELEGRAM_CHAT_ID || "";
 if (!SUPABASE_URL || !SERVICE_KEY) {
   console.error("[bridge] FATAL: SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY são obrigatórias (.env.agent).");
   process.exit(1);
-}
-if (!SECRET) {
-  console.error("[bridge] FATAL: BRIDGE_SECRET é obrigatória (.env.agent) — o canal é público; sem código qualquer um");
-  console.error("          conseguiria mandar prompts ao Claude Code nesta máquina. Define um código forte e usa-o no chat.");
-  process.exit(1);
-}
-
-// Anti-replay: ids já vistos dentro da janela de validade da assinatura.
-const SIG_WINDOW_MS = 5 * 60_000;
-const seenIds = new Map();
-
-/**
- * Verifica que a mensagem foi assinada com o BRIDGE_SECRET (HMAC) e é recente.
- * Assina-se `id.ts.text`. Rejeita assinaturas inválidas, fora da janela ou repetidas.
- */
-function verifySignature(payload) {
-  const { id, ts, sig, text } = payload || {};
-  if (!id || typeof sig !== "string" || typeof ts !== "number") return false;
-  if (Math.abs(Date.now() - ts) > SIG_WINDOW_MS) return false; // stale / relógio adiantado
-  const expected = createHmac("sha256", SECRET).update(`${id}.${ts}.${text || ""}`).digest("hex");
-  const a = Buffer.from(sig, "utf8");
-  const b = Buffer.from(expected, "utf8");
-  if (a.length !== b.length || !timingSafeEqual(a, b)) return false;
-  if (seenIds.has(id)) return false; // replay
-  seenIds.set(id, ts);
-  if (seenIds.size > 1000) for (const [k, v] of seenIds) if (Date.now() - v > SIG_WINDOW_MS) seenIds.delete(k);
-  return true;
 }
 
 /**
@@ -106,13 +77,16 @@ function notify(title, message) {
   }
 }
 
-const supabase = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
+const supabase = createClient(SUPABASE_URL, SERVICE_KEY, {
+  auth: { persistSession: false },
+  realtime: { disconnectOnEmptyChannelsAfterMs: 60_000 },
+});
 
 let claudeSession = null;
 let busy = false;
 
 const channel = supabase.channel(CHANNEL, {
-  config: { broadcast: { self: false, ack: true }, presence: { key: "terminal" } },
+  config: { broadcast: { self: false } },
 });
 
 const childEnv = { ...process.env, AGENT_PROJECT_ROOT: ROOT };
@@ -239,17 +213,6 @@ async function handle(payload) {
   const text = (payload?.text || "").trim();
   if (!text) return;
 
-  // Porta de segurança: só mensagens assinadas com o código (BRIDGE_SECRET) passam.
-  if (!verifySignature(payload)) {
-    console.warn(`\x1b[31m[bridge]\x1b[0m ✗ mensagem rejeitada (código de acesso inválido/em falta)`);
-    await channel.send({
-      type: "broadcast",
-      event: "assistant_msg",
-      payload: { id: payload?.id, text: "🔒 Código de acesso inválido ou em falta. Verifica o código no chat (🔓 no cabeçalho para o trocar)." },
-    });
-    return;
-  }
-
   // Avisa o owner que chegou uma mensagem nova no chat deste site.
   notify(`💬 ${CHANNEL}`, text);
 
@@ -320,16 +283,32 @@ async function handle(payload) {
   }
 }
 
+let heartbeatTimer = null;
+
+function sendHeartbeat() {
+  channel.send({ type: "broadcast", event: "daemon_online", payload: { ts: Date.now(), project: ROOT } }).catch(() => {});
+}
+
+// Delay de arranque: dá tempo ao event loop do Bun de estabilizar em contexto launchd
+await new Promise((r) => setTimeout(r, 500));
+
 channel
   .on("broadcast", { event: "user_msg" }, ({ payload }) => handle(payload))
   .subscribe((status) => {
     console.log(`[bridge] canal "${CHANNEL}": ${status}`);
     if (status === "SUBSCRIBED") {
       console.log(`[bridge] ✓ pronto (projeto: ${ROOT}). Modelo: ${MODEL || "(default do CLI)"}`);
-      channel.track({ role: "terminal", ts: Date.now() }); // Presence — sem batimentos periódicos
+      sendHeartbeat();
+      if (!heartbeatTimer) {
+        heartbeatTimer = setInterval(sendHeartbeat, 20_000);
+      }
+    }
+    if (status === "CLOSED" || status === "CHANNEL_ERROR") {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
     }
   });
 
-const bye = () => { supabase.removeAllChannels(); process.exit(0); };
+const bye = () => { clearInterval(heartbeatTimer); supabase.removeAllChannels(); process.exit(0); };
 process.on("SIGINT", () => { console.log("\n[bridge] a desligar..."); bye(); });
 process.on("SIGTERM", bye);
