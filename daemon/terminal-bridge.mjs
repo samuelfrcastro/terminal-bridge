@@ -14,6 +14,13 @@
  *   AGENT_PROJECT_ROOT    raiz do site (default: cwd)
  *   BRIDGE_MODEL          modelo do Claude Code (opcional; default = o do CLI)
  *   BRIDGE_FLAG           marca da aba a capturar (default 'claude')
+ *
+ * Modo fila de tarefas (BRIDGE_MODE=queue):
+ *   BRIDGE_MODE           "queue" para delegar ao dashboard-3macs em vez de correr Claude localmente
+ *   BRIDGE_QUEUE_URL      URL base do dashboard (ex https://ioc-1.tail215de3.ts.net:4747)
+ *   BRIDGE_QUEUE_TOKEN    token admin do dashboard (~/.claude/dashboard-token)
+ *   BRIDGE_PROJECT        nome do projeto para serialização da fila (ex 'iocmanager')
+ *   BRIDGE_SITE_NAME      nome legível do site para aparecer no prompt (default: BRIDGE_CHANNEL)
  */
 
 import { createClient } from "@supabase/supabase-js";
@@ -33,6 +40,13 @@ const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const ROOT = process.env.AGENT_PROJECT_ROOT || process.cwd();
 const CHANNEL = process.env.BRIDGE_CHANNEL || "terminal-bridge";
 const MODEL = process.env.BRIDGE_MODEL || "";
+
+// Modo fila de tarefas
+const BRIDGE_MODE = process.env.BRIDGE_MODE || "direct"; // "direct" | "queue"
+const BRIDGE_QUEUE_URL = (process.env.BRIDGE_QUEUE_URL || "").replace(/\/$/, "");
+const BRIDGE_QUEUE_TOKEN = process.env.BRIDGE_QUEUE_TOKEN || "";
+const BRIDGE_PROJECT = process.env.BRIDGE_PROJECT || "";
+const BRIDGE_SITE_NAME = process.env.BRIDGE_SITE_NAME || CHANNEL;
 
 // Notificações ao owner: ligadas por defeito (BRIDGE_NOTIFY=0 desliga).
 const NOTIFY = process.env.BRIDGE_NOTIFY !== "0";
@@ -209,7 +223,135 @@ function saveInlineImage(dataUrl) {
   }
 }
 
+/**
+ * Modo BRIDGE_MODE=queue: delega ao dashboard-3macs em vez de correr Claude localmente.
+ * O prompt inclui a origem (site, página, raiz do repo) para o runner saber onde trabalhar.
+ * Faz poll a /api/queue/:id a cada 2s e transmite live_output como deltas enquanto espera.
+ */
+async function handleQueue(payload) {
+  const text = (payload?.text || "").trim();
+  if (!text) return;
+  notify(`💬 ${CHANNEL}`, text);
+
+  if (!BRIDGE_QUEUE_URL || !BRIDGE_QUEUE_TOKEN) {
+    await channel.send({ type: "broadcast", event: "assistant_msg", payload: { id: payload.id, text: "❌ BRIDGE_QUEUE_URL e BRIDGE_QUEUE_TOKEN são obrigatórios no modo queue." } });
+    return;
+  }
+
+  if (busy) {
+    await channel.send({ type: "broadcast", event: "assistant_msg", payload: { id: payload.id, text: "⏳ Ainda estou a tratar do pedido anterior — aguarda um momento." } });
+    return;
+  }
+  busy = true;
+
+  const onMobile = payload.device === "mobile";
+  const route = payload.route || "";
+
+  // Contexto de origem embutido no prompt para o runner saber onde trabalhar
+  const originLines = [];
+  originLines.push(`Este pedido vem do chat do site **${BRIDGE_SITE_NAME}** (canal \`${CHANNEL}\`).`);
+  if (route) originLines.push(`O utilizador está na rota \`${route}\`.`);
+  if (ROOT) originLines.push(`O repositório do projeto está em \`${ROOT}\` — trabalha sempre a partir daí, é o repo correcto.`);
+  if (onMobile) originLines.push(`Mensagem enviada do telemóvel.`);
+
+  const prompt =
+    `[Origem: ${BRIDGE_SITE_NAME}${route ? " · " + route : ""}]\n\n` +
+    originLines.join(" ") +
+    `\n\nPedido do utilizador:\n${text}`;
+
+  // Enfileira no dashboard
+  let taskId;
+  try {
+    const res = await fetch(`${BRIDGE_QUEUE_URL}/api/queue`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-admin-token": BRIDGE_QUEUE_TOKEN },
+      body: JSON.stringify({
+        prompt,
+        project: BRIDGE_PROJECT || null,
+        source_channel: CHANNEL,
+        source_site: BRIDGE_SITE_NAME,
+        source_page: route || null,
+      }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "queue error");
+    taskId = data.id;
+    console.log(`\n\x1b[36m[app→queue]\x1b[0m tarefa #${taskId} enfileirada (${BRIDGE_SITE_NAME}${route ? " " + route : ""})`);
+  } catch (e) {
+    busy = false;
+    console.error(`\x1b[31m[bridge]\x1b[0m erro ao enfileirar: ${e.message}`);
+    await channel.send({ type: "broadcast", event: "assistant_msg", payload: { id: payload.id, text: `❌ Erro ao enfileirar tarefa: ${e.message}` } });
+    return;
+  }
+
+  // Acknowledge imediato no chat
+  await channel.send({ type: "broadcast", event: "assistant_msg", payload: {
+    id: payload.id,
+    text: `⏳ Tarefa #${taskId} adicionada à fila do dashboard... (a aguardar execução)`,
+  }});
+
+  // Poll até conclusão (máx 10 min)
+  let lastLiveLen = 0;
+  const MAX_POLLS = 300; // 300 × 2s = 10 min
+  let polls = 0;
+
+  await new Promise((resolve) => {
+    const tick = async () => {
+      polls++;
+      try {
+        const res = await fetch(`${BRIDGE_QUEUE_URL}/api/queue/${taskId}`, {
+          headers: { "x-admin-token": BRIDGE_QUEUE_TOKEN },
+        });
+        const { task } = await res.json();
+
+        // Transmite live_output como delta enquanto a tarefa corre
+        const live = task?.live_output || "";
+        if (live.length > lastLiveLen) {
+          const delta = live.slice(lastLiveLen);
+          lastLiveLen = live.length;
+          await channel.send({ type: "broadcast", event: "assistant_delta", payload: { id: payload.id + "-live", text: delta } }).catch(() => {});
+        }
+
+        if (task?.status === "done" || task?.status === "error") {
+          const finalText = task.result || "(sem resultado)";
+          const prefix = task.status === "error" ? "❌ " : "";
+          console.log(`\x1b[32m[queue→app]\x1b[0m tarefa #${taskId} ${task.status}: ${finalText.slice(0, 120)}`);
+          notify(`${task.status === "done" ? "✅" : "❌"} ${BRIDGE_SITE_NAME}`, finalText);
+          await channel.send({ type: "broadcast", event: "assistant_msg", payload: {
+            id: payload.id,
+            text: prefix + finalText,
+            task_id: taskId,
+            streamed: lastLiveLen > 0,
+          }});
+          busy = false;
+          resolve();
+          return;
+        }
+      } catch (e) {
+        console.error(`\x1b[33m[bridge]\x1b[0m poll erro: ${e.message}`);
+      }
+
+      if (polls >= MAX_POLLS) {
+        console.warn(`[bridge] timeout polling tarefa #${taskId}`);
+        await channel.send({ type: "broadcast", event: "assistant_msg", payload: {
+          id: payload.id,
+          text: `⏱ Timeout: tarefa #${taskId} ainda a correr após 10 min. Verifica no dashboard.`,
+          task_id: taskId,
+        }});
+        busy = false;
+        resolve();
+        return;
+      }
+      setTimeout(tick, 2000);
+    };
+    setTimeout(tick, 2000);
+  });
+}
+
 async function handle(payload) {
+  // Delega para a fila do dashboard quando BRIDGE_MODE=queue
+  if (BRIDGE_MODE === "queue") return handleQueue(payload);
+
   const text = (payload?.text || "").trim();
   if (!text) return;
 
