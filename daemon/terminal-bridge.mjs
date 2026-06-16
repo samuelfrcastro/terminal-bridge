@@ -47,6 +47,7 @@ const BRIDGE_QUEUE_URL = (process.env.BRIDGE_QUEUE_URL || "").replace(/\/$/, "")
 const BRIDGE_QUEUE_TOKEN = process.env.BRIDGE_QUEUE_TOKEN || "";
 const BRIDGE_PROJECT = process.env.BRIDGE_PROJECT || "";
 const BRIDGE_SITE_NAME = process.env.BRIDGE_SITE_NAME || CHANNEL;
+const BRIDGE_TARGET_HOST = process.env.BRIDGE_TARGET_HOST || ""; // runner que deve executar (mac-1/mac-3/ioc-1)
 
 // Notificações ao owner: ligadas por defeito (BRIDGE_NOTIFY=0 desliga).
 const NOTIFY = process.env.BRIDGE_NOTIFY !== "0";
@@ -268,6 +269,7 @@ async function handleQueue(payload) {
       body: JSON.stringify({
         prompt,
         project: BRIDGE_PROJECT || null,
+        target_host: BRIDGE_TARGET_HOST || null,
         source_channel: CHANNEL,
         source_site: BRIDGE_SITE_NAME,
         source_page: route || null,
