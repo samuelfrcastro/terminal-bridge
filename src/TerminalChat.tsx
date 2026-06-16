@@ -32,12 +32,15 @@ export function TerminalChat({
     isStreaming,
     online,
     sendMessage,
+    locked,
+    unlock,
     notificationPermission,
     notificationsOn,
     enableNotifications,
     disableNotifications,
   } = useTerminalBridge({ supabase, channel, enabled });
   const [input, setInput] = useState('');
+  const [codeInput, setCodeInput] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -122,6 +125,53 @@ export function TerminalChat({
         )}
       </div>
 
+      {locked ? (
+        /* Ecrã de bloqueio — pedir código de acesso */
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: 24 }}>
+          <span style={{ fontSize: 32 }}>🔒</span>
+          <p style={{ color: '#9ca3af', textAlign: 'center', margin: 0, fontSize: 13, maxWidth: 280 }}>
+            Este canal requer um código de acesso.<br />
+            Obtém o link de ligação no dashboard e abre-o neste browser, ou introduz o código manualmente.
+          </p>
+          <div style={{ display: 'flex', gap: 8, width: '100%', maxWidth: 320 }}>
+            <input
+              type="password"
+              value={codeInput}
+              onChange={(e) => setCodeInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && codeInput.trim()) { unlock(codeInput.trim()); setCodeInput(''); } }}
+              placeholder="Código de acesso…"
+              autoFocus
+              style={{
+                flex: 1,
+                background: '#111827',
+                color: '#e5e7eb',
+                border: '1px solid #374151',
+                borderRadius: 8,
+                padding: '8px 10px',
+                fontFamily: 'inherit',
+                fontSize: 14,
+                outline: 'none',
+              }}
+            />
+            <button
+              onClick={() => { if (codeInput.trim()) { unlock(codeInput.trim()); setCodeInput(''); } }}
+              disabled={!codeInput.trim()}
+              style={{
+                background: codeInput.trim() ? '#2563eb' : '#374151',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 8,
+                padding: '0 14px',
+                cursor: codeInput.trim() ? 'pointer' : 'default',
+                fontWeight: 600,
+                fontSize: 13,
+              }}
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      ) : (
       <>
       {/* Mensagens */}
       <div ref={listRef} style={{ flex: 1, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -207,6 +257,7 @@ export function TerminalChat({
         </button>
       </div>
       </>
+      )}
     </div>
   );
 }

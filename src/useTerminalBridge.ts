@@ -42,6 +42,10 @@ export interface TerminalBridge {
   /** true enquanto o daemon (Claude Code) estiver presente no canal. */
   online: boolean;
   sendMessage: (content: string) => Promise<void>;
+  /** true se não há segredo configurado neste browser (mensagens serão rejeitadas pelo daemon). */
+  locked: boolean;
+  /** Guarda o segredo HMAC para este canal neste browser. */
+  unlock: (secret: string) => void;
   /** Estado da permissão de notificações do browser ('unsupported' se indisponível). */
   notificationPermission: NotificationPermission | 'unsupported';
   /** true quando as notificações estão activas (permissão concedida + ligadas). */
@@ -59,6 +63,25 @@ const uid = () =>
 
 /** Notificações disponíveis neste ambiente (browser com a API Notification). */
 const notifySupported = () => typeof window !== 'undefined' && 'Notification' in window;
+
+/** Chave localStorage para o segredo HMAC por canal. */
+const secretKey = (channel: string) => `tb-secret:${channel}`;
+
+const readSecret = (channel: string): string => {
+  try { return (typeof window !== 'undefined' && window.localStorage.getItem(secretKey(channel))) || ''; }
+  catch { return ''; }
+};
+const writeSecret = (channel: string, s: string) => {
+  try { if (typeof window !== 'undefined') window.localStorage.setItem(secretKey(channel), s); } catch {}
+};
+
+/** HMAC-SHA256(secret, `${id}.${ts}.${text}`) → base64. */
+async function signMessage(secret: string, id: string, ts: number, text: string): Promise<string> {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const buf = await crypto.subtle.sign('HMAC', key, enc.encode(`${id}.${ts}.${text}`));
+  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+}
 
 /** Preferência de notificações (ligadas/desligadas), por canal — default ligadas. */
 const notifyPrefKey = (channel: string) => `tb-notify:${channel}`;
@@ -134,6 +157,31 @@ export function useTerminalBridge(opts: UseTerminalBridgeOptions = {}): Terminal
   const [isStreaming, setIsStreaming] = useState(false);
   const [online, setOnline] = useState(false);
   const channelRef = useRef<ReturnType<SupabaseClient['channel']> | null>(null);
+
+  // Segredo HMAC: lido do localStorage e/ou ?tb-secret= na URL (provisionamento).
+  const [secret, setSecret] = useState<string>(() => readSecret(channel));
+  const locked = !secret;
+  const unlock = useCallback((s: string) => {
+    const trimmed = s.trim();
+    writeSecret(channel, trimmed);
+    setSecret(trimmed);
+  }, [channel]);
+
+  // Ao montar (ou mudar canal): consumir ?tb-secret= da URL e remover o param.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const urlSecret = params.get('tb-secret');
+    if (urlSecret) {
+      unlock(urlSecret);
+      params.delete('tb-secret');
+      const newSearch = params.toString();
+      const newUrl = window.location.pathname + (newSearch ? '?' + newSearch : '') + window.location.hash;
+      window.history.replaceState(null, '', newUrl);
+    }
+    // Re-ler o canal se mudar
+    setSecret(readSecret(channel));
+  }, [channel, unlock]);
 
   // Notificações do browser: permissão + toggle (guardado por canal).
   const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>(() =>
@@ -292,16 +340,19 @@ export function useTerminalBridge(opts: UseTerminalBridgeOptions = {}): Terminal
       }
 
       setIsStreaming(true);
+      const ts = Date.now();
       const route = window.location.pathname + window.location.search;
       const device = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? 'mobile' : 'desktop';
       const image = device === 'mobile' && captureMobileScreen ? await captureScreenSmall() : null;
+      // Assinar com HMAC se o segredo estiver configurado
+      const sig = secret ? await signMessage(secret, id, ts, text).catch(() => undefined) : undefined;
       await channelRef.current?.send({
         type: 'broadcast',
         event: 'user_msg',
-        payload: { id, text, route, device, image },
+        payload: { id, text, ts, sig, route, device, image },
       });
     },
-    [isStreaming, online, captureMobileScreen]
+    [isStreaming, online, captureMobileScreen, secret]
   );
 
   return {
@@ -309,6 +360,8 @@ export function useTerminalBridge(opts: UseTerminalBridgeOptions = {}): Terminal
     isStreaming,
     online,
     sendMessage,
+    locked,
+    unlock,
     notificationPermission: permission,
     notificationsOn,
     enableNotifications,

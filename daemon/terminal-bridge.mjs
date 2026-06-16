@@ -59,6 +59,32 @@ if (!SUPABASE_URL || !SERVICE_KEY) {
   process.exit(1);
 }
 
+// ── Auth HMAC ────────────────────────────────────────────────────────────────
+const BRIDGE_SECRET = process.env.BRIDGE_SECRET || "";
+if (!BRIDGE_SECRET) {
+  console.warn("[bridge] AVISO: BRIDGE_SECRET não definido — canal aceita mensagens sem autenticação.");
+}
+// Replay protection: guarda IDs vistos nos últimos 10 min.
+const seenIds = new Map(); // id → expiry ms
+function cleanSeenIds() {
+  const now = Date.now();
+  for (const [id, exp] of seenIds) if (now > exp) seenIds.delete(id);
+}
+async function verifyHmac(payload) {
+  if (!BRIDGE_SECRET) return true; // sem secret configurado: aceita tudo
+  const { id, ts, text, sig } = payload || {};
+  if (!sig || !id || !ts) return false;
+  if (Math.abs(Date.now() - ts) > 5 * 60_000) return false; // ts fora de ±5 min
+  cleanSeenIds();
+  if (seenIds.has(id)) return false; // replay
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(BRIDGE_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+  const sigBuf = Uint8Array.from(atob(sig), (c) => c.charCodeAt(0));
+  const valid = await crypto.subtle.verify("HMAC", key, sigBuf, enc.encode(`${id}.${ts}.${text}`));
+  if (valid) seenIds.set(id, Date.now() + 10 * 60_000);
+  return valid;
+}
+
 /**
  * Avisa o owner que há atividade no chat: notificação nativa do macOS e, se
  * configurado, mensagem no Telegram. Fire-and-forget — nunca bloqueia o handler.
@@ -437,7 +463,19 @@ function sendHeartbeat() {
 await new Promise((r) => setTimeout(r, 500));
 
 channel
-  .on("broadcast", { event: "user_msg" }, ({ payload }) => handle(payload))
+  .on("broadcast", { event: "user_msg" }, async ({ payload }) => {
+    const valid = await verifyHmac(payload);
+    if (!valid) {
+      console.warn(`[bridge] 🔒 mensagem rejeitada (auth inválida) id=${payload?.id}`);
+      channel.send({ type: "broadcast", event: "assistant_msg", payload: {
+        id: payload?.id || "auth-err",
+        text: "🔒 Acesso negado — configura o código de acesso neste browser (ver dashboard).",
+        streamed: false,
+      }}).catch(() => {});
+      return;
+    }
+    handle(payload);
+  })
   .subscribe((status) => {
     console.log(`[bridge] canal "${CHANNEL}": ${status}`);
     if (status === "SUBSCRIBED") {
