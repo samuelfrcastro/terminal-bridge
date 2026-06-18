@@ -26,7 +26,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
@@ -118,6 +118,14 @@ function notify(title, message) {
   }
 }
 
+// ── State persistence (restart recovery) ─────────────────────────────────────
+// Guarda o taskId activo em disco antes de iniciar o poll. Se o daemon reiniciar
+// com uma tarefa em curso, recupera e retoma o poll sem perder a resposta.
+const STATE_FILE = join(process.env.HOME || "/tmp", ".claude", `bridge-state-${CHANNEL}.json`);
+function saveState(s) { try { writeFileSync(STATE_FILE, JSON.stringify(s), { mode: 0o600 }); } catch {} }
+function clearState() { try { unlinkSync(STATE_FILE); } catch {} }
+function loadState() { try { return JSON.parse(readFileSync(STATE_FILE, "utf8")); } catch { return null; } }
+
 const supabase = createClient(SUPABASE_URL, SERVICE_KEY, {
   auth: { persistSession: false },
   realtime: { heartbeatIntervalMs: 15_000, disconnectOnEmptyChannelsAfterMs: 300_000 },
@@ -129,6 +137,49 @@ let busy = false;
 const channel = supabase.channel(CHANNEL, {
   config: { broadcast: { self: false } },
 });
+
+// ── ACK para assistant_msg ────────────────────────────────────────────────────
+// Quando o browser recebe assistant_msg, envia assistant_msg_ack de volta.
+// O daemon aguarda esse ACK antes de considerar a entrega confirmada.
+// Sem ACK em 5s → retry até 3x. Backward compat: se o browser for antigo
+// e nunca enviar ACK, o daemon loga aviso mas não fica stuck.
+const pendingAssistantAcks = new Map(); // msgId → resolve()
+
+async function sendAssistantWithAck(msgPayload) {
+  const msgId = msgPayload.id;
+  for (let i = 0; i < 3; i++) {
+    await channel.send({ type: "broadcast", event: "assistant_msg", payload: msgPayload }).catch(() => {});
+    const acked = await new Promise((resolve) => {
+      const timer = setTimeout(() => { pendingAssistantAcks.delete(msgId); resolve(false); }, 5_000);
+      pendingAssistantAcks.set(msgId, () => { clearTimeout(timer); resolve(true); });
+    });
+    if (acked) return;
+    if (i < 2) console.warn(`[bridge] assistant_msg sem ACK (id=${msgId}), tentativa ${i + 2}/3`);
+  }
+  console.warn(`[bridge] assistant_msg não confirmado após 3 tentativas (id=${msgId}) — browser pode não ter código ACK`);
+}
+
+// ── HTTP POST com retry ───────────────────────────────────────────────────────
+// Garante entrega mesmo se o servidor do dashboard estiver temporariamente down.
+async function postWithRetry(url, body, token, maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-admin-token": token },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (data.ok) return data;
+      throw new Error(data.error || "queue error");
+    } catch (e) {
+      if (i === maxRetries - 1) throw e;
+      const delay = 2000 * (i + 1);
+      console.warn(`[bridge] POST falhou (tentativa ${i + 1}/${maxRetries}): ${e.message} — retry em ${delay / 1000}s`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+}
 
 const childEnv = { ...process.env, AGENT_PROJECT_ROOT: ROOT };
 
@@ -251,6 +302,61 @@ function saveInlineImage(dataUrl) {
 }
 
 /**
+ * Poll de uma tarefa na fila do dashboard até conclusão.
+ * Extrai a lógica de polling para ser reutilizável em restart recovery.
+ */
+async function runQueuePoll(taskId, payloadId) {
+  let lastLiveLen = 0;
+  const MAX_POLLS = 300; // 300 × 2s = 10 min
+  let polls = 0;
+
+  await new Promise((resolve) => {
+    const tick = async () => {
+      polls++;
+      try {
+        const res = await fetch(`${BRIDGE_QUEUE_URL}/api/queue/${taskId}`, {
+          headers: { "x-admin-token": BRIDGE_QUEUE_TOKEN },
+        });
+        const { task } = await res.json();
+
+        // Transmite live_output como delta enquanto a tarefa corre
+        const live = task?.live_output || "";
+        if (live.length > lastLiveLen) {
+          const delta = live.slice(lastLiveLen);
+          lastLiveLen = live.length;
+          await channel.send({ type: "broadcast", event: "assistant_delta", payload: { id: payloadId + "-live", text: delta } }).catch(() => {});
+        }
+
+        if (task?.status === "done" || task?.status === "error") {
+          const finalText = task.result || "(sem resultado)";
+          const prefix = task.status === "error" ? "❌ " : "";
+          console.log(`\x1b[32m[queue→app]\x1b[0m tarefa #${taskId} ${task.status}: ${finalText.slice(0, 120)}`);
+          notify(`${task.status === "done" ? "✅" : "❌"} ${BRIDGE_SITE_NAME}`, finalText);
+          clearState();
+          await sendAssistantWithAck({ id: payloadId, text: prefix + finalText, task_id: taskId, streamed: lastLiveLen > 0 });
+          busy = false;
+          resolve();
+          return;
+        }
+      } catch (e) {
+        console.error(`\x1b[33m[bridge]\x1b[0m poll erro: ${e.message}`);
+      }
+
+      if (polls >= MAX_POLLS) {
+        console.warn(`[bridge] timeout polling tarefa #${taskId}`);
+        clearState();
+        await sendAssistantWithAck({ id: payloadId, text: `⏱ Timeout: tarefa #${taskId} ainda a correr após 10 min. Verifica no dashboard.`, task_id: taskId });
+        busy = false;
+        resolve();
+        return;
+      }
+      setTimeout(tick, 2000);
+    };
+    setTimeout(tick, 2000);
+  });
+}
+
+/**
  * Modo BRIDGE_MODE=queue: delega ao dashboard-3macs em vez de correr Claude localmente.
  * O prompt inclui a origem (site, página, raiz do repo) para o runner saber onde trabalhar.
  * Faz poll a /api/queue/:id a cada 2s e transmite live_output como deltas enquanto espera.
@@ -261,12 +367,12 @@ async function handleQueue(payload) {
   notify(`💬 ${CHANNEL}`, text);
 
   if (!BRIDGE_QUEUE_URL || !BRIDGE_QUEUE_TOKEN) {
-    await channel.send({ type: "broadcast", event: "assistant_msg", payload: { id: payload.id, text: "❌ BRIDGE_QUEUE_URL e BRIDGE_QUEUE_TOKEN são obrigatórios no modo queue." } });
+    await sendAssistantWithAck({ id: payload.id, text: "❌ BRIDGE_QUEUE_URL e BRIDGE_QUEUE_TOKEN são obrigatórios no modo queue." });
     return;
   }
 
   if (busy) {
-    await channel.send({ type: "broadcast", event: "assistant_msg", payload: { id: payload.id, text: "⏳ Ainda estou a tratar do pedido anterior — aguarda um momento." } });
+    await sendAssistantWithAck({ id: payload.id, text: "⏳ Ainda estou a tratar do pedido anterior — aguarda um momento." });
     return;
   }
   busy = true;
@@ -288,94 +394,36 @@ async function handleQueue(payload) {
     originLines.join(" ") +
     `\n\nPedido do utilizador:\n${text}`;
 
-  // Enfileira no dashboard
+  // Enfileira no dashboard (com retry automático)
   let taskId;
   try {
-    const res = await fetch(`${BRIDGE_QUEUE_URL}/api/queue`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-admin-token": BRIDGE_QUEUE_TOKEN },
-      body: JSON.stringify({
-        prompt,
-        project: BRIDGE_PROJECT || null,
-        target_host: BRIDGE_TARGET_HOST || null,
-        source_channel: CHANNEL,
-        source_site: BRIDGE_SITE_NAME,
-        source_page: route || null,
-      }),
-    });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error || "queue error");
+    const data = await postWithRetry(`${BRIDGE_QUEUE_URL}/api/queue`, {
+      prompt,
+      project: BRIDGE_PROJECT || null,
+      target_host: BRIDGE_TARGET_HOST || null,
+      source_channel: CHANNEL,
+      source_site: BRIDGE_SITE_NAME,
+      source_page: route || null,
+    }, BRIDGE_QUEUE_TOKEN);
     taskId = data.id;
     console.log(`\n\x1b[36m[app→queue]\x1b[0m tarefa #${taskId} enfileirada (${BRIDGE_SITE_NAME}${route ? " " + route : ""})`);
   } catch (e) {
     busy = false;
     console.error(`\x1b[31m[bridge]\x1b[0m erro ao enfileirar: ${e.message}`);
-    await channel.send({ type: "broadcast", event: "assistant_msg", payload: { id: payload.id, text: `❌ Erro ao enfileirar tarefa: ${e.message}` } });
+    await sendAssistantWithAck({ id: payload.id, text: `❌ Erro ao enfileirar tarefa: ${e.message}` });
     return;
   }
 
-  // Acknowledge imediato no chat
+  // Persistir estado antes do poll — se daemon reiniciar, retoma automaticamente
+  saveState({ taskId, payloadId: payload.id, channel: CHANNEL, startedAt: Date.now() });
+
+  // Acknowledge imediato no chat (sem esperar ACK — mensagem de status, não resultado)
   await channel.send({ type: "broadcast", event: "assistant_msg", payload: {
     id: payload.id,
     text: `⏳ Tarefa #${taskId} adicionada à fila do dashboard... (a aguardar execução)`,
-  }});
+  }}).catch(() => {});
 
-  // Poll até conclusão (máx 10 min)
-  let lastLiveLen = 0;
-  const MAX_POLLS = 300; // 300 × 2s = 10 min
-  let polls = 0;
-
-  await new Promise((resolve) => {
-    const tick = async () => {
-      polls++;
-      try {
-        const res = await fetch(`${BRIDGE_QUEUE_URL}/api/queue/${taskId}`, {
-          headers: { "x-admin-token": BRIDGE_QUEUE_TOKEN },
-        });
-        const { task } = await res.json();
-
-        // Transmite live_output como delta enquanto a tarefa corre
-        const live = task?.live_output || "";
-        if (live.length > lastLiveLen) {
-          const delta = live.slice(lastLiveLen);
-          lastLiveLen = live.length;
-          await channel.send({ type: "broadcast", event: "assistant_delta", payload: { id: payload.id + "-live", text: delta } }).catch(() => {});
-        }
-
-        if (task?.status === "done" || task?.status === "error") {
-          const finalText = task.result || "(sem resultado)";
-          const prefix = task.status === "error" ? "❌ " : "";
-          console.log(`\x1b[32m[queue→app]\x1b[0m tarefa #${taskId} ${task.status}: ${finalText.slice(0, 120)}`);
-          notify(`${task.status === "done" ? "✅" : "❌"} ${BRIDGE_SITE_NAME}`, finalText);
-          await channel.send({ type: "broadcast", event: "assistant_msg", payload: {
-            id: payload.id,
-            text: prefix + finalText,
-            task_id: taskId,
-            streamed: lastLiveLen > 0,
-          }});
-          busy = false;
-          resolve();
-          return;
-        }
-      } catch (e) {
-        console.error(`\x1b[33m[bridge]\x1b[0m poll erro: ${e.message}`);
-      }
-
-      if (polls >= MAX_POLLS) {
-        console.warn(`[bridge] timeout polling tarefa #${taskId}`);
-        await channel.send({ type: "broadcast", event: "assistant_msg", payload: {
-          id: payload.id,
-          text: `⏱ Timeout: tarefa #${taskId} ainda a correr após 10 min. Verifica no dashboard.`,
-          task_id: taskId,
-        }});
-        busy = false;
-        resolve();
-        return;
-      }
-      setTimeout(tick, 2000);
-    };
-    setTimeout(tick, 2000);
-  });
+  await runQueuePoll(taskId, payload.id);
 }
 
 async function handle(payload) {
@@ -389,7 +437,7 @@ async function handle(payload) {
   notify(`💬 ${CHANNEL}`, text);
 
   if (busy) {
-    await channel.send({ type: "broadcast", event: "assistant_msg", payload: { id: payload.id, text: "⏳ Ainda estou a tratar do pedido anterior — aguarda um momento." } });
+    await sendAssistantWithAck({ id: payload.id, text: "⏳ Ainda estou a tratar do pedido anterior — aguarda um momento." });
     return;
   }
   busy = true;
@@ -444,13 +492,13 @@ async function handle(payload) {
     await sendQ;
     console.log(`\x1b[32m[claude→app]\x1b[0m (${((Date.now() - t0) / 1000).toFixed(1)}s) ${answer}\n`);
     notify(`✅ ${CHANNEL}`, answer);
-    // Mensagem final autoritativa: o cliente substitui o texto streamado (corrige deltas perdidos).
-    await channel.send({ type: "broadcast", event: "assistant_msg", payload: { id: payload.id, text: answer, session: claudeSession, shot: !!shot, streamed: true } });
+    // Mensagem final autoritativa com ACK: o cliente substitui o texto streamado (corrige deltas perdidos).
+    await sendAssistantWithAck({ id: payload.id, text: answer, session: claudeSession, shot: !!shot, streamed: true });
   } catch (e) {
     clearInterval(flusher);
     const msg = `Erro ao correr o Claude Code: ${e?.message || e}`;
     console.error(`\x1b[31m[bridge]\x1b[0m ${msg}`);
-    await channel.send({ type: "broadcast", event: "assistant_msg", payload: { id: payload.id, text: "❌ " + msg } });
+    await sendAssistantWithAck({ id: payload.id, text: "❌ " + msg });
   } finally {
     busy = false;
   }
@@ -465,11 +513,15 @@ function sendHeartbeat() {
 // Delay de arranque: dá tempo ao event loop do Bun de estabilizar em contexto launchd
 await new Promise((r) => setTimeout(r, 500));
 
+// Carregar estado persistido (restart recovery)
+const savedState = loadState();
+
 channel
   .on("broadcast", { event: "user_msg" }, async ({ payload }) => {
     const valid = await verifyHmac(payload);
     if (!valid) {
       console.warn(`[bridge] 🔒 mensagem rejeitada (auth inválida) id=${payload?.id}`);
+      // Não enviar ACK para mensagens inválidas — evita confirmar recepção de lixo
       channel.send({ type: "broadcast", event: "assistant_msg", payload: {
         id: payload?.id || "auth-err",
         text: "🔒 Acesso negado — configura o código de acesso neste browser (ver dashboard).",
@@ -477,7 +529,14 @@ channel
       }}).catch(() => {});
       return;
     }
+    // Confirmar recepção imediatamente, antes de processar
+    channel.send({ type: "broadcast", event: "user_msg_ack", payload: { id: payload?.id } }).catch(() => {});
     handle(payload);
+  })
+  .on("broadcast", { event: "assistant_msg_ack" }, ({ payload }) => {
+    // Browser confirmou que recebeu o assistant_msg — resolver a promise em pendingAssistantAcks
+    const resolve = pendingAssistantAcks.get(payload?.id);
+    if (resolve) { resolve(); pendingAssistantAcks.delete(payload.id); }
   })
   .subscribe((status) => {
     console.log(`[bridge] canal "${CHANNEL}": ${status}`);
@@ -486,6 +545,22 @@ channel
       sendHeartbeat();
       if (!heartbeatTimer) {
         heartbeatTimer = setInterval(sendHeartbeat, 20_000);
+      }
+      // Restart recovery: se há tarefa activa em disco, retomar o poll
+      if (savedState?.taskId && savedState?.payloadId && !busy) {
+        const age = Date.now() - (savedState.startedAt || 0);
+        if (age < 10 * 60_000) { // só retoma se a tarefa tem menos de 10 min
+          console.log(`[bridge] restart recovery: a retomar tarefa #${savedState.taskId} (${Math.round(age / 1000)}s atrás)`);
+          busy = true;
+          channel.send({ type: "broadcast", event: "assistant_delta", payload: {
+            id: savedState.payloadId + "-live",
+            text: "\n_(daemon reiniciou — a retomar monitorização...)_\n",
+          }}).catch(() => {});
+          runQueuePoll(savedState.taskId, savedState.payloadId);
+        } else {
+          console.log(`[bridge] restart recovery: tarefa #${savedState.taskId} já tem ${Math.round(age / 60_000)}min — demasiado antiga, a limpar estado`);
+          clearState();
+        }
       }
     }
     if (status === "CLOSED" || status === "CHANNEL_ERROR") {

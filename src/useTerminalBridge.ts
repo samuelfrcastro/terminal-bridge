@@ -157,6 +157,8 @@ export function useTerminalBridge(opts: UseTerminalBridgeOptions = {}): Terminal
   const [isStreaming, setIsStreaming] = useState(false);
   const [online, setOnline] = useState(false);
   const channelRef = useRef<ReturnType<SupabaseClient['channel']> | null>(null);
+  // ACK pending: id da mensagem enviada → resolve(true/false)
+  const pendingAcks = useRef<Map<string, () => void>>(new Map());
 
   // Segredo HMAC: lido do localStorage e/ou ?tb-secret= na URL (provisionamento).
   const [secret, setSecret] = useState<string>(() => readSecret(channel));
@@ -286,10 +288,19 @@ export function useTerminalBridge(opts: UseTerminalBridgeOptions = {}): Terminal
     });
 
     // Mensagem final autoritativa: substitui o texto streamado e termina o stream.
+    // Envia ACK de volta para o daemon confirmar entrega.
     ch.on('broadcast', { event: 'assistant_msg' }, ({ payload }: any) => {
       upsertAssistant(payload.id, (msg) => ({ ...msg, content: payload.text, streaming: false }));
       setIsStreaming(false);
       notifyRef.current('Resposta do terminal', payload.text || '');
+      // Confirmar entrega ao daemon (soft — se o daemon for antigo, ignora)
+      ch.send({ type: 'broadcast', event: 'assistant_msg_ack', payload: { id: payload.id } }).catch(() => {});
+    });
+
+    // ACK do daemon para mensagem enviada pelo browser
+    ch.on('broadcast', { event: 'user_msg_ack' }, ({ payload }: any) => {
+      const resolve = pendingAcks.current.get(payload?.id);
+      if (resolve) { resolve(); pendingAcks.current.delete(payload.id); }
     });
 
     // Mensagem de outro visitante no mesmo chat (self:false → nunca o eco do próprio).
@@ -344,15 +355,31 @@ export function useTerminalBridge(opts: UseTerminalBridgeOptions = {}): Terminal
       const route = window.location.pathname + window.location.search;
       const device = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? 'mobile' : 'desktop';
       const image = device === 'mobile' && captureMobileScreen ? await captureScreenSmall() : null;
-      // Assinar com HMAC se o segredo estiver configurado
       const sig = secret ? await signMessage(secret, id, ts, text).catch(() => undefined) : undefined;
-      await channelRef.current?.send({
-        type: 'broadcast',
-        event: 'user_msg',
-        payload: { id, text, ts, sig, route, device, image },
-      });
+      const msgPayload = { id, text, ts, sig, route, device, image };
+
+      // Enviar com ACK + retry: aguarda confirmação do daemon em 6s, repete até 3x.
+      // Soft fail: se o daemon for antigo e nunca enviar ACK, avisa o utilizador após 3 tentativas.
+      const MAX_RETRIES = 3;
+      const ACK_TIMEOUT_MS = 6_000;
+      let delivered = false;
+      for (let attempt = 0; attempt < MAX_RETRIES && !delivered; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 2_000));
+        await channelRef.current?.send({ type: 'broadcast', event: 'user_msg', payload: msgPayload });
+        delivered = await new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => { pendingAcks.current.delete(id); resolve(false); }, ACK_TIMEOUT_MS);
+          pendingAcks.current.set(id, () => { clearTimeout(timer); resolve(true); });
+        });
+      }
+      if (!delivered) {
+        setMessages((m) => [
+          ...m,
+          { id: id + '-no-ack', role: 'assistant', content: '⚠️ Mensagem enviada mas o daemon não confirmou recepção. Verifica se o terminal bridge está online.' },
+        ]);
+        setIsStreaming(false);
+      }
     },
-    [isStreaming, online, captureMobileScreen, secret]
+    [isStreaming, online, captureMobileScreen, secret, pendingAcks]
   );
 
   return {

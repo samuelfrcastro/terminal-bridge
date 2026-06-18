@@ -7,6 +7,26 @@ var DEFAULT_HUB = {
 };
 var uid = () => typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
 var notifySupported = () => typeof window !== "undefined" && "Notification" in window;
+var secretKey = (channel) => `tb-secret:${channel}`;
+var readSecret = (channel) => {
+  try {
+    return typeof window !== "undefined" && window.localStorage.getItem(secretKey(channel)) || "";
+  } catch {
+    return "";
+  }
+};
+var writeSecret = (channel, s) => {
+  try {
+    if (typeof window !== "undefined") window.localStorage.setItem(secretKey(channel), s);
+  } catch {
+  }
+};
+async function signMessage(secret, id, ts, text) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const buf = await crypto.subtle.sign("HMAC", key, enc.encode(`${id}.${ts}.${text}`));
+  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+}
 var notifyPrefKey = (channel) => `tb-notify:${channel}`;
 var readNotifyPref = (channel) => {
   try {
@@ -69,6 +89,27 @@ function useTerminalBridge(opts = {}) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [online, setOnline] = useState(false);
   const channelRef = useRef(null);
+  const pendingAcks = useRef(/* @__PURE__ */ new Map());
+  const [secret, setSecret] = useState(() => readSecret(channel));
+  const locked = !secret;
+  const unlock = useCallback((s) => {
+    const trimmed = s.trim();
+    writeSecret(channel, trimmed);
+    setSecret(trimmed);
+  }, [channel]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const urlSecret = params.get("tb-secret");
+    if (urlSecret) {
+      unlock(urlSecret);
+      params.delete("tb-secret");
+      const newSearch = params.toString();
+      const newUrl = window.location.pathname + (newSearch ? "?" + newSearch : "") + window.location.hash;
+      window.history.replaceState(null, "", newUrl);
+    }
+    setSecret(readSecret(channel));
+  }, [channel, unlock]);
   const [permission, setPermission] = useState(
     () => notifySupported() ? Notification.permission : "unsupported"
   );
@@ -168,6 +209,15 @@ function useTerminalBridge(opts = {}) {
       upsertAssistant(payload.id, (msg) => ({ ...msg, content: payload.text, streaming: false }));
       setIsStreaming(false);
       notifyRef.current("Resposta do terminal", payload.text || "");
+      ch.send({ type: "broadcast", event: "assistant_msg_ack", payload: { id: payload.id } }).catch(() => {
+      });
+    });
+    ch.on("broadcast", { event: "user_msg_ack" }, ({ payload }) => {
+      const resolve = pendingAcks.current.get(payload?.id);
+      if (resolve) {
+        resolve();
+        pendingAcks.current.delete(payload.id);
+      }
     });
     ch.on("broadcast", { event: "user_msg" }, ({ payload }) => {
       if (!payload?.id) return;
@@ -207,22 +257,46 @@ function useTerminalBridge(opts = {}) {
         return;
       }
       setIsStreaming(true);
+      const ts = Date.now();
       const route = window.location.pathname + window.location.search;
       const device = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? "mobile" : "desktop";
       const image = device === "mobile" && captureMobileScreen ? await captureScreenSmall() : null;
-      await channelRef.current?.send({
-        type: "broadcast",
-        event: "user_msg",
-        payload: { id, text, route, device, image }
-      });
+      const sig = secret ? await signMessage(secret, id, ts, text).catch(() => void 0) : void 0;
+      const msgPayload = { id, text, ts, sig, route, device, image };
+      const MAX_RETRIES = 3;
+      const ACK_TIMEOUT_MS = 6e3;
+      let delivered = false;
+      for (let attempt = 0; attempt < MAX_RETRIES && !delivered; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 2e3));
+        await channelRef.current?.send({ type: "broadcast", event: "user_msg", payload: msgPayload });
+        delivered = await new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            pendingAcks.current.delete(id);
+            resolve(false);
+          }, ACK_TIMEOUT_MS);
+          pendingAcks.current.set(id, () => {
+            clearTimeout(timer);
+            resolve(true);
+          });
+        });
+      }
+      if (!delivered) {
+        setMessages((m) => [
+          ...m,
+          { id: id + "-no-ack", role: "assistant", content: "\u26A0\uFE0F Mensagem enviada mas o daemon n\xE3o confirmou recep\xE7\xE3o. Verifica se o terminal bridge est\xE1 online." }
+        ]);
+        setIsStreaming(false);
+      }
     },
-    [isStreaming, online, captureMobileScreen]
+    [isStreaming, online, captureMobileScreen, secret, pendingAcks]
   );
   return {
     messages,
     isStreaming,
     online,
     sendMessage,
+    locked,
+    unlock,
     notificationPermission: permission,
     notificationsOn,
     enableNotifications,
@@ -245,12 +319,15 @@ function TerminalChat({
     isStreaming,
     online,
     sendMessage,
+    locked,
+    unlock,
     notificationPermission,
     notificationsOn,
     enableNotifications,
     disableNotifications
   } = useTerminalBridge({ supabase, channel, enabled });
   const [input, setInput] = useState2("");
+  const [codeInput, setCodeInput] = useState2("");
   const listRef = useRef2(null);
   useEffect2(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
@@ -336,7 +413,69 @@ function TerminalChat({
             ]
           }
         ),
-        /* @__PURE__ */ jsxs(Fragment, { children: [
+        locked ? (
+          /* Ecrã de bloqueio — pedir código de acesso */
+          /* @__PURE__ */ jsxs("div", { style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, padding: 24 }, children: [
+            /* @__PURE__ */ jsx("span", { style: { fontSize: 32 }, children: "\u{1F512}" }),
+            /* @__PURE__ */ jsxs("p", { style: { color: "#9ca3af", textAlign: "center", margin: 0, fontSize: 13, maxWidth: 280 }, children: [
+              "Este canal requer um c\xF3digo de acesso.",
+              /* @__PURE__ */ jsx("br", {}),
+              "Obt\xE9m o link de liga\xE7\xE3o no dashboard e abre-o neste browser, ou introduz o c\xF3digo manualmente."
+            ] }),
+            /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, width: "100%", maxWidth: 320 }, children: [
+              /* @__PURE__ */ jsx(
+                "input",
+                {
+                  type: "password",
+                  value: codeInput,
+                  onChange: (e) => setCodeInput(e.target.value),
+                  onKeyDown: (e) => {
+                    if (e.key === "Enter" && codeInput.trim()) {
+                      unlock(codeInput.trim());
+                      setCodeInput("");
+                    }
+                  },
+                  placeholder: "C\xF3digo de acesso\u2026",
+                  autoFocus: true,
+                  style: {
+                    flex: 1,
+                    background: "#111827",
+                    color: "#e5e7eb",
+                    border: "1px solid #374151",
+                    borderRadius: 8,
+                    padding: "8px 10px",
+                    fontFamily: "inherit",
+                    fontSize: 14,
+                    outline: "none"
+                  }
+                }
+              ),
+              /* @__PURE__ */ jsx(
+                "button",
+                {
+                  onClick: () => {
+                    if (codeInput.trim()) {
+                      unlock(codeInput.trim());
+                      setCodeInput("");
+                    }
+                  },
+                  disabled: !codeInput.trim(),
+                  style: {
+                    background: codeInput.trim() ? "#2563eb" : "#374151",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: 8,
+                    padding: "0 14px",
+                    cursor: codeInput.trim() ? "pointer" : "default",
+                    fontWeight: 600,
+                    fontSize: 13
+                  },
+                  children: "OK"
+                }
+              )
+            ] })
+          ] })
+        ) : /* @__PURE__ */ jsxs(Fragment, { children: [
           /* @__PURE__ */ jsxs("div", { ref: listRef, style: { flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 }, children: [
             messages.length === 0 && /* @__PURE__ */ jsx("p", { style: { color: "#6b7280", textAlign: "center", marginTop: 24 }, children: online ? "Liga-te ao Claude Code da tua m\xE1quina. Escreve abaixo." : "\xC0 espera do terminal\u2026" }),
             messages.map((m) => /* @__PURE__ */ jsxs(
