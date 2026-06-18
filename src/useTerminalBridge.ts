@@ -362,9 +362,11 @@ export function useTerminalBridge(opts: UseTerminalBridgeOptions = {}): Terminal
       // Soft fail: se o daemon for antigo e nunca enviar ACK, avisa o utilizador após 3 tentativas.
       const MAX_RETRIES = 3;
       const ACK_TIMEOUT_MS = 6_000;
+      // Delays antes de cada retry: imediato, 2s, 60s (última tentativa dá tempo p/ serviço reiniciar)
+      const RETRY_DELAYS = [0, 2_000, 60_000];
       let delivered = false;
       for (let attempt = 0; attempt < MAX_RETRIES && !delivered; attempt++) {
-        if (attempt > 0) await new Promise((r) => setTimeout(r, 2_000));
+        if (RETRY_DELAYS[attempt] > 0) await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
         await channelRef.current?.send({ type: 'broadcast', event: 'user_msg', payload: msgPayload });
         delivered = await new Promise<boolean>((resolve) => {
           const timer = setTimeout(() => { pendingAcks.current.delete(id); resolve(false); }, ACK_TIMEOUT_MS);

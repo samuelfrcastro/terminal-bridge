@@ -147,7 +147,10 @@ const pendingAssistantAcks = new Map(); // msgId → resolve()
 
 async function sendAssistantWithAck(msgPayload) {
   const msgId = msgPayload.id;
+  // Delays entre tentativas: imediato, 2s, 60s (última dá tempo p/ browser reiniciar)
+  const retryDelays = [0, 2_000, 60_000];
   for (let i = 0; i < 3; i++) {
+    if (retryDelays[i] > 0) await new Promise((r) => setTimeout(r, retryDelays[i]));
     await channel.send({ type: "broadcast", event: "assistant_msg", payload: msgPayload }).catch(() => {});
     const acked = await new Promise((resolve) => {
       const timer = setTimeout(() => { pendingAssistantAcks.delete(msgId); resolve(false); }, 5_000);
@@ -174,7 +177,8 @@ async function postWithRetry(url, body, token, maxRetries = 3) {
       throw new Error(data.error || "queue error");
     } catch (e) {
       if (i === maxRetries - 1) throw e;
-      const delay = 2000 * (i + 1);
+      // Delays: 2s, 60s (última tentativa dá tempo p/ servidor reiniciar)
+      const delay = i === 0 ? 2_000 : 60_000;
       console.warn(`[bridge] POST falhou (tentativa ${i + 1}/${maxRetries}): ${e.message} — retry em ${delay / 1000}s`);
       await new Promise((r) => setTimeout(r, delay));
     }

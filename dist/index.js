@@ -265,9 +265,10 @@ function useTerminalBridge(opts = {}) {
       const msgPayload = { id, text, ts, sig, route, device, image };
       const MAX_RETRIES = 3;
       const ACK_TIMEOUT_MS = 6e3;
+      const RETRY_DELAYS = [0, 2e3, 6e4];
       let delivered = false;
       for (let attempt = 0; attempt < MAX_RETRIES && !delivered; attempt++) {
-        if (attempt > 0) await new Promise((r) => setTimeout(r, 2e3));
+        if (RETRY_DELAYS[attempt] > 0) await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
         await channelRef.current?.send({ type: "broadcast", event: "user_msg", payload: msgPayload });
         delivered = await new Promise((resolve) => {
           const timer = setTimeout(() => {
