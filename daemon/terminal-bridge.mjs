@@ -273,16 +273,18 @@ async function handleQueue(payload) {
 
   const onMobile = payload.device === "mobile";
   const route = payload.route || "";
+  const userEmail = payload.userEmail || "";
 
   // Contexto de origem embutido no prompt para o runner saber onde trabalhar
   const originLines = [];
   originLines.push(`Este pedido vem do chat do site **${BRIDGE_SITE_NAME}** (canal \`${CHANNEL}\`).`);
+  if (userEmail) originLines.push(`O utilizador autenticado é **${userEmail}**.`);
   if (route) originLines.push(`O utilizador está na rota \`${route}\`.`);
   if (ROOT) originLines.push(`O repositório do projeto está em \`${ROOT}\` — trabalha sempre a partir daí, é o repo correcto.`);
   if (onMobile) originLines.push(`Mensagem enviada do telemóvel.`);
 
   const prompt =
-    `[Origem: ${BRIDGE_SITE_NAME}${route ? " · " + route : ""}]\n\n` +
+    `[Origem: ${BRIDGE_SITE_NAME}${route ? " · " + route : ""}${userEmail ? " · " + userEmail : ""}]\n\n` +
     originLines.join(" ") +
     `\n\nPedido do utilizador:\n${text}`;
 
@@ -409,6 +411,7 @@ async function handle(payload) {
   // Contexto de página: combina os sinais que existirem (rota sempre, + ficheiro, + printscreen).
   const where = onMobile ? "no telemóvel" : "no browser";
   const ctx = [];
+  if (payload.userEmail) ctx.push(`O utilizador autenticado é **${payload.userEmail}**.`);
   if (payload.route) ctx.push(`O utilizador está ${where} na rota \`${payload.route}\`.`);
   if (routeFile) ctx.push(`Essa rota corresponde ao ficheiro \`${routeFile}\` — usa-o para contexto.`);
   if (shot) ctx.push(`Tens um printscreen REAL do que ele vê em \`${shot}\` — lê-o com a tool Read antes de responder.`);
