@@ -120,7 +120,7 @@ function notify(title, message) {
 
 const supabase = createClient(SUPABASE_URL, SERVICE_KEY, {
   auth: { persistSession: false },
-  realtime: { disconnectOnEmptyChannelsAfterMs: 60_000 },
+  realtime: { heartbeatIntervalMs: 15_000, disconnectOnEmptyChannelsAfterMs: 300_000 },
 });
 
 let claudeSession = null;
@@ -489,8 +489,7 @@ channel
       }
     }
     if (status === "CLOSED" || status === "CHANNEL_ERROR") {
-      clearInterval(heartbeatTimer);
-      heartbeatTimer = null;
+      // heartbeat timer kept running so channel.send() retries on reconnect
     }
   });
 
