@@ -270,7 +270,7 @@ if (args.includes("--shot")) {
     Safari: "Safari",
   }[(sourceLabel.match(/·\s+(\w+) →/) || [])[1] || "Chrome"] || "Google Chrome";
 
-  const out = join("/tmp", `terminal-bridge-view-${Date.now()}.png`);
+  const out = join("/tmp", `iframe-mac-view-${Date.now()}.png`);
   // Encontra a JANELA que tem a aba marcada, traz essa janela ao topo e
   // devolve os bounds DELA (não da "front window" ambígua). bounds = {x1,y1,x2,y2}.
   const focusAndBounds = `

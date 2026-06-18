@@ -171,7 +171,6 @@ async function postWithRetry(url, body, token, maxRetries = 3) {
         method: "POST",
         headers: { "content-type": "application/json", "x-admin-token": token },
         body: JSON.stringify(body),
-        redirect: "error", // falha em redirects — evita 301 POST→GET silencioso
       });
       const data = await res.json();
       if (data.ok) return data;

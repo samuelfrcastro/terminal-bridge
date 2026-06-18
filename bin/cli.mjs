@@ -17,7 +17,7 @@ function run(bin, args, opts = {}) {
 switch (cmd) {
   case "daemon":
     // corre o daemon a partir da pasta do site (resolve @supabase/supabase-js do site)
-    run(process.execPath, [join(PKG, "daemon", "terminal-bridge.mjs"), ...rest]);
+    run(process.execPath, [join(PKG, "daemon", "iframe-mac.mjs"), ...rest]);
     break;
   case "page":
     run(process.execPath, [join(PKG, "daemon", "which-page.mjs"), ...rest]);
@@ -33,24 +33,24 @@ switch (cmd) {
     // não existir (attach-or-create), no socket default — o mesmo do `tmux attach`.
     const site = rest[0];
     if (!site) {
-      console.error("Uso: terminal-bridge attach <site>   (ex: terminal-bridge attach grupo-jantar)");
+      console.error("Uso: iframe-mac attach <site>   (ex: iframe-mac attach grupo-jantar)");
       console.error("Depois, sair sem matar: Ctrl-b d. Re-ligar: tmux attach -t tb-<site>");
       process.exit(1);
     }
     const session = `tb-${site}`;
-    const log = `/tmp/terminal-bridge-${site}.log`;
+    const log = `/tmp/iframe-mac-${site}.log`;
     run("tmux", ["new-session", "-A", "-s", session, `tail -n 200 -F '${log}'`]);
     break;
   }
   default:
-    console.log(`terminal-bridge — liga o chat de um site ao Claude Code local.
+    console.log(`iframe-mac — liga o chat de um site ao Claude Code local.
 
 Uso:
-  terminal-bridge daemon       Corre o daemon (lê .env.agent do site)
-  terminal-bridge install      Instala o daemon como serviço (LaunchAgent)
-  terminal-bridge attach <s>   Vê o daemon ao vivo numa sessão tmux (Ctrl-b d p/ sair)
-  terminal-bridge page ...     which-page: resolve rota/printscreen
-  terminal-bridge release      Propaga a nova versão a todos os sites (sites.json)
+  iframe-mac daemon       Corre o daemon (lê .env.agent do site)
+  iframe-mac install      Instala o daemon como serviço (LaunchAgent)
+  iframe-mac attach <s>   Vê o daemon ao vivo numa sessão tmux (Ctrl-b d p/ sair)
+  iframe-mac page ...     which-page: resolve rota/printscreen
+  iframe-mac release      Propaga a nova versão a todos os sites (sites.json)
 `);
     process.exit(cmd ? 1 : 0);
 }

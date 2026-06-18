@@ -1,6 +1,6 @@
 {
-  "name": "terminal-bridge",
-  "version": "2.3.2",
+  "name": "iframe-mac",
+  "version": "3.0.1",
   "description": "Plugin reutilizável: liga o chat de um site ao Claude Code local (na máquina do owner), via Supabase Realtime. Inclui Presence (online/offline), printscreen e continuidade de sessão. Melhora-se uma vez, vale para todos os sites.",
   "type": "module",
   "license": "MIT",
@@ -15,7 +15,7 @@
     }
   },
   "bin": {
-    "terminal-bridge": "./bin/cli.mjs"
+    "iframe-mac": "./bin/cli.mjs"
   },
   "files": [
     "dist",
@@ -28,7 +28,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "daemon": "bun daemon/terminal-bridge.mjs",
+    "daemon": "bun daemon/iframe-mac.mjs",
     "release": "node scripts/release.mjs"
   },
   "peerDependencies": {

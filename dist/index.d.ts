@@ -10,7 +10,7 @@ interface BridgeMessage {
     /** true enquanto ainda chegam deltas desta resposta. */
     streaming?: boolean;
 }
-interface UseTerminalBridgeOptions {
+interface UseIframeMacOptions {
     /** Cliente Supabase a usar. Se omitido, usa o hub Realtime partilhado (DEFAULT_HUB). */
     supabase?: SupabaseClient;
     /** Nome do canal Realtime — único por site (ex. 'bridge-iocmanager'). */
@@ -22,7 +22,7 @@ interface UseTerminalBridgeOptions {
     /** Mostrar notificações do browser em mensagens novas (default true; precisa de permissão). */
     notify?: boolean;
 }
-interface TerminalBridge {
+interface IframeMac {
     messages: BridgeMessage[];
     isStreaming: boolean;
     /** true enquanto o daemon (Claude Code) estiver presente no canal. */
@@ -45,9 +45,9 @@ interface TerminalBridge {
  * Liga o chat ao Claude Code que corre na máquina do owner, via Supabase Realtime.
  * Online/offline por Presence (sem mensagens periódicas). Genérico: serve qualquer site.
  */
-declare function useTerminalBridge(opts?: UseTerminalBridgeOptions): TerminalBridge;
+declare function useIframeMac(opts?: UseIframeMacOptions): IframeMac;
 
-interface TerminalChatProps {
+interface IframeMacChatProps {
     /** Cliente Supabase a usar. Se omitido, usa o hub Realtime partilhado. */
     supabase?: SupabaseClient;
     /** Canal Realtime único por site (ex. 'bridge-iocmanager'). */
@@ -62,8 +62,8 @@ interface TerminalChatProps {
 /**
  * Painel de chat auto-contido que fala com o Claude Code local (via daemon).
  * Estilos inline → funciona em qualquer site sem depender do design system dele.
- * Marcado com data-terminal-bridge-ignore para não aparecer nas capturas de ecrã.
+ * Marcado com data-iframe-mac-ignore para não aparecer nas capturas de ecrã.
  */
-declare function TerminalChat({ supabase, channel, enabled, title, placeholder, }: TerminalChatProps): react.JSX.Element;
+declare function IframeMacChat({ supabase, channel, enabled, title, placeholder, }: IframeMacChatProps): react.JSX.Element;
 
-export { type BridgeMessage, type TerminalBridge, TerminalChat, type TerminalChatProps, type UseTerminalBridgeOptions, useTerminalBridge };
+export { type BridgeMessage, type IframeMac, IframeMacChat, type IframeMacChatProps, type UseIframeMacOptions, useIframeMac };

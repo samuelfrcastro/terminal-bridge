@@ -8,9 +8,9 @@
  *   2. para cada site: npm install do package (última versão) + corre o comando de deploy.
  *
  * Uso:
- *   terminal-bridge release            atualiza + deploya todos os sites
- *   terminal-bridge release --update   só atualiza o package nos sites (sem deploy)
- *   terminal-bridge release --site X   só esse site
+ *   iframe-mac release            atualiza + deploya todos os sites
+ *   iframe-mac release --update   só atualiza o package nos sites (sem deploy)
+ *   iframe-mac release --site X   só esse site
  */
 import { readFileSync, existsSync } from "node:fs";
 import { execSync } from "node:child_process";
@@ -28,7 +28,7 @@ if (!existsSync(cfgPath)) {
   process.exit(1);
 }
 const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
-const gitRef = cfg.gitRef || "github:samuelfrcastro/terminal-bridge";
+const gitRef = cfg.gitRef || "github:samuelfrcastro/iframe-mac";
 const sites = (cfg.sites || []).filter((s) => !onlySite || s.name === onlySite);
 
 const sh = (cmd, cwd) => execSync(cmd, { cwd, stdio: "pipe", encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
@@ -41,7 +41,7 @@ const pkgVersion = JSON.parse(readFileSync(join(PKG, "package.json"), "utf8")).v
 let headSha = "";
 try { headSha = sh("git rev-parse HEAD", PKG).trim(); } catch {}
 const ref = headSha ? `${gitRef}#${headSha}` : gitRef;
-console.log(`\n▶ release do terminal-bridge v${pkgVersion} (${headSha.slice(0, 7) || "?"}) para ${sites.length} site(s)\n`);
+console.log(`\n▶ release do iframe-mac v${pkgVersion} (${headSha.slice(0, 7) || "?"}) para ${sites.length} site(s)\n`);
 
 const results = [];
 for (const site of sites) {
@@ -54,7 +54,7 @@ for (const site of sites) {
     sh(`npm install ${ref} --save${installFlags}`, site.path);
 
     // Auto-verificação: confirma que o que ficou instalado é mesmo esta versão.
-    const installedPkg = join(site.path, "node_modules", "terminal-bridge", "package.json");
+    const installedPkg = join(site.path, "node_modules", "iframe-mac", "package.json");
     const installed = existsSync(installedPkg) ? JSON.parse(readFileSync(installedPkg, "utf8")).version : "?";
     if (installed !== pkgVersion) {
       throw new Error(`versão instalada (${installed}) ≠ esperada (${pkgVersion}) — npm serviu cache; tenta com --force`);

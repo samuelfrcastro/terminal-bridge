@@ -1,4 +1,4 @@
-// src/useTerminalBridge.ts
+// src/useIframeMac.ts
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 var DEFAULT_HUB = {
@@ -69,7 +69,7 @@ async function captureScreenSmall(maxB64 = 18e4) {
         quality,
         scale,
         backgroundColor: "#ffffff",
-        filter: (node) => !(node instanceof HTMLElement && node.dataset?.terminalBridgeIgnore === "true")
+        filter: (node) => !(node instanceof HTMLElement && node.dataset?.iframeMacIgnore === "true")
       });
       const b64 = dataUrl.split(",")[1] || "";
       if (b64.length <= maxB64) return dataUrl;
@@ -79,8 +79,8 @@ async function captureScreenSmall(maxB64 = 18e4) {
     return null;
   }
 }
-function useTerminalBridge(opts = {}) {
-  const { supabase, channel = "terminal-bridge", enabled = true, captureMobileScreen = true, notify = true } = opts;
+function useIframeMac(opts = {}) {
+  const { supabase, channel = "iframe-mac", enabled = true, captureMobileScreen = true, notify = true } = opts;
   const client = useMemo(
     () => supabase ?? createClient(DEFAULT_HUB.url, DEFAULT_HUB.anonKey, { auth: { persistSession: false } }),
     [supabase]
@@ -284,7 +284,7 @@ function useTerminalBridge(opts = {}) {
       if (!delivered) {
         setMessages((m) => [
           ...m,
-          { id: id + "-no-ack", role: "assistant", content: "\u26A0\uFE0F Mensagem enviada mas o daemon n\xE3o confirmou recep\xE7\xE3o. Verifica se o terminal bridge est\xE1 online." }
+          { id: id + "-no-ack", role: "assistant", content: "\u26A0\uFE0F Mensagem enviada mas o daemon n\xE3o confirmou recep\xE7\xE3o. Verifica se o iframe-mac est\xE1 online." }
         ]);
         setIsStreaming(false);
       }
@@ -305,10 +305,10 @@ function useTerminalBridge(opts = {}) {
   };
 }
 
-// src/TerminalChat.tsx
+// src/IframeMacChat.tsx
 import { useEffect as useEffect2, useRef as useRef2, useState as useState2 } from "react";
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
-function TerminalChat({
+function IframeMacChat({
   supabase,
   channel,
   enabled = true,
@@ -326,7 +326,7 @@ function TerminalChat({
     notificationsOn,
     enableNotifications,
     disableNotifications
-  } = useTerminalBridge({ supabase, channel, enabled });
+  } = useIframeMac({ supabase, channel, enabled });
   const [input, setInput] = useState2("");
   const [codeInput, setCodeInput] = useState2("");
   const listRef = useRef2(null);
@@ -342,7 +342,7 @@ function TerminalChat({
   return /* @__PURE__ */ jsxs(
     "div",
     {
-      "data-terminal-bridge-ignore": "true",
+      "data-iframe-mac-ignore": "true",
       style: {
         display: "flex",
         flexDirection: "column",
@@ -557,7 +557,7 @@ function TerminalChat({
   );
 }
 export {
-  TerminalChat,
-  useTerminalBridge
+  IframeMacChat,
+  useIframeMac
 };
 //# sourceMappingURL=index.js.map
