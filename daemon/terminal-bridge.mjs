@@ -546,6 +546,8 @@ channel
     console.log(`[bridge] canal "${CHANNEL}": ${status}`);
     if (status === "SUBSCRIBED") {
       console.log(`[bridge] ✓ pronto (projeto: ${ROOT}). Modelo: ${MODEL || "(default do CLI)"}`);
+      // Anunciar presença via Presence — o browser usa presenceState() para detectar "online"
+      channel.track({ online: true, project: ROOT, ts: Date.now() }).catch(() => {});
       sendHeartbeat();
       if (!heartbeatTimer) {
         heartbeatTimer = setInterval(sendHeartbeat, 20_000);
