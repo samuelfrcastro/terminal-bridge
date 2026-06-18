@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 /**
- * terminal-bridge (daemon) — liga o chat de um site ao Claude Code desta máquina.
+ * iframe-mac (daemon) — liga o chat de um site ao Claude Code desta máquina.
  * Genérico: corre para qualquer site, parametrizado por env. Online via Presence.
  *
  * Correr (a partir da pasta do site, que tem @supabase/supabase-js):
- *   bun node_modules/terminal-bridge/daemon/terminal-bridge.mjs
- * ou via CLI:  npx terminal-bridge daemon
+ *   bun node_modules/iframe-mac/daemon/iframe-mac.mjs
+ * ou via CLI:  npx iframe-mac daemon
  *
  * Env (normalmente em .env.agent na raiz do site):
  *   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY  (obrigatórias)
@@ -38,7 +38,7 @@ const WHICH_PAGE = join(HERE, "which-page.mjs");
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const ROOT = process.env.AGENT_PROJECT_ROOT || process.cwd();
-const CHANNEL = process.env.BRIDGE_CHANNEL || "terminal-bridge";
+const CHANNEL = process.env.BRIDGE_CHANNEL || "iframe-mac";
 const MODEL = process.env.BRIDGE_MODEL || "";
 
 // Modo fila de tarefas
@@ -190,7 +190,7 @@ const childEnv = { ...process.env, AGENT_PROJECT_ROOT: ROOT };
 async function captureMarkedTab() {
   try {
     const { stdout } = await execFileP(process.execPath, [WHICH_PAGE, "--shot"], { cwd: ROOT, timeout: 20_000, env: childEnv });
-    const m = stdout.match(/\/tmp\/terminal-bridge-view-\d+\.png/);
+    const m = stdout.match(/\/tmp\/iframe-mac-view-\d+\.png/);
     return m ? m[0] : null;
   } catch {
     return null;
@@ -297,7 +297,7 @@ function saveInlineImage(dataUrl) {
     const m = dataUrl.match(/^data:image\/(png|jpeg|jpg);base64,(.+)$/);
     if (!m) return null;
     const ext = m[1] === "jpeg" ? "jpg" : m[1];
-    const out = join("/tmp", `terminal-bridge-mobile-${Date.now()}.${ext}`);
+    const out = join("/tmp", `iframe-mac-mobile-${Date.now()}.${ext}`);
     writeFileSync(out, Buffer.from(m[2], "base64"));
     return out;
   } catch {
