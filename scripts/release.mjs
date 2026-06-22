@@ -12,7 +12,7 @@
  *   iframe-mac release --update   só atualiza o package nos sites (sem deploy)
  *   iframe-mac release --site X   só esse site
  */
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, copyFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,6 +60,15 @@ for (const site of sites) {
       throw new Error(`versão instalada (${installed}) ≠ esperada (${pkgVersion}) — npm serviu cache; tenta com --force`);
     }
     console.log(`${tag} ✓ package v${installed}`);
+
+    // Sincroniza o embed.html canónico (dashboard) → public/ deste site.
+    // É o chat partilhado (Rápido/Editor/Terminal). "Edita num → vale para todos."
+    const dashSite = sites.find((s) => /dashboard/.test(s.name));
+    if (dashSite && site.path !== dashSite.path) {
+      const embSrc = join(dashSite.path, "public/embed.html");
+      const embDst = join(site.path, "public/embed.html");
+      if (existsSync(embSrc)) { copyFileSync(embSrc, embDst); console.log(`${tag} ✓ embed.html sincronizado`); }
+    }
 
     if (noDeploy) {
       console.log(`${tag} ✓ atualizado (sem deploy)`);
