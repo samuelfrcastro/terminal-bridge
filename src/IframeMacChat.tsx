@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { useIframeMac } from './useIframeMac';
+import { useIframeMac, type BridgeMode } from './useIframeMac';
 
 export interface IframeMacChatProps {
   /** Cliente Supabase a usar. Se omitido, usa o hub Realtime partilhado. */
@@ -13,7 +13,16 @@ export interface IframeMacChatProps {
   title?: string;
   /** Texto do placeholder do input. */
   placeholder?: string;
+  /** Modo inicial se o browser ainda não tiver preferência (default 'direct'). */
+  defaultMode?: BridgeMode;
 }
+
+/** Os três modos de execução, todos no alvo mac-3. */
+const MODES: { key: BridgeMode; icon: string; label: string; hint: string }[] = [
+  { key: 'direct',   icon: '⚡', label: 'Direto',   hint: 'Claude Code a correr na máquina (mac-3) — resposta imediata em streaming.' },
+  { key: 'queue',    icon: '📋', label: 'Fila',     hint: 'Enfileira como tarefa no dashboard (serializada, com histórico) no alvo mac-3.' },
+  { key: 'terminal', icon: '🖥️', label: 'Terminal', hint: 'Shell tmux persistente em mac-3 — corre comandos e vê a saída ao vivo.' },
+];
 
 /**
  * Painel de chat auto-contido que fala com o Claude Code local (via daemon).
@@ -26,19 +35,22 @@ export function IframeMacChat({
   enabled = true,
   title = 'Terminal',
   placeholder = 'Escreve uma mensagem…',
+  defaultMode = 'direct',
 }: IframeMacChatProps) {
   const {
     messages,
     isStreaming,
     online,
     sendMessage,
+    mode,
+    setMode,
     locked,
     unlock,
     notificationPermission,
     notificationsOn,
     enableNotifications,
     disableNotifications,
-  } = useIframeMac({ supabase, channel, enabled });
+  } = useIframeMac({ supabase, channel, enabled, defaultMode });
   const [input, setInput] = useState('');
   const [codeInput, setCodeInput] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
@@ -123,6 +135,48 @@ export function IframeMacChat({
             {notificationsOn ? '🔔' : '🔕'}
           </button>
         )}
+      </div>
+
+      {/* Seletor de modo: Direto · Fila · Terminal (todos no alvo mac-3) */}
+      <div
+        title={MODES.find((x) => x.key === mode)?.hint}
+        style={{
+          display: 'flex',
+          gap: 4,
+          padding: '6px 10px',
+          borderBottom: '1px solid #1f2937',
+          background: '#0d1320',
+        }}
+      >
+        {MODES.map((x) => {
+          const active = mode === x.key;
+          return (
+            <button
+              key={x.key}
+              onClick={() => setMode(x.key)}
+              title={x.hint}
+              style={{
+                flex: 1,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 5,
+                padding: '5px 8px',
+                borderRadius: 7,
+                border: '1px solid ' + (active ? '#2563eb' : '#283246'),
+                background: active ? '#1d4ed8' : 'transparent',
+                color: active ? '#fff' : '#9ca3af',
+                cursor: 'pointer',
+                fontSize: 12,
+                fontWeight: active ? 600 : 500,
+                transition: 'background 120ms, border-color 120ms',
+              }}
+            >
+              <span aria-hidden>{x.icon}</span>
+              {x.label}
+            </button>
+          );
+        })}
       </div>
 
       {locked ? (
@@ -225,7 +279,7 @@ export function IframeMacChat({
               submit();
             }
           }}
-          placeholder={placeholder}
+          placeholder={mode === 'terminal' ? 'Comando de shell… (ex. git status)' : placeholder}
           rows={1}
           style={{
             flex: 1,

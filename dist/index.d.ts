@@ -10,6 +10,8 @@ interface BridgeMessage {
     /** true enquanto ainda chegam deltas desta resposta. */
     streaming?: boolean;
 }
+/** Modo de execução do pedido — escolhido por mensagem, todos correm no alvo mac-3. */
+type BridgeMode = 'direct' | 'queue' | 'terminal';
 interface UseIframeMacOptions {
     /** Cliente Supabase a usar. Se omitido, usa o hub Realtime partilhado (DEFAULT_HUB). */
     supabase?: SupabaseClient;
@@ -21,6 +23,8 @@ interface UseIframeMacOptions {
     captureMobileScreen?: boolean;
     /** Mostrar notificações do browser em mensagens novas (default true; precisa de permissão). */
     notify?: boolean;
+    /** Modo inicial se o browser ainda não tiver preferência guardada (default 'direct'). */
+    defaultMode?: BridgeMode;
 }
 interface IframeMac {
     messages: BridgeMessage[];
@@ -28,6 +32,10 @@ interface IframeMac {
     /** true enquanto o daemon (Claude Code) estiver presente no canal. */
     online: boolean;
     sendMessage: (content: string) => Promise<void>;
+    /** Modo de execução atual (direct/queue/terminal) — guardado por canal. */
+    mode: BridgeMode;
+    /** Muda o modo de execução (persiste no localStorage por canal). */
+    setMode: (m: BridgeMode) => void;
     /** true se não há segredo configurado neste browser (mensagens serão rejeitadas pelo daemon). */
     locked: boolean;
     /** Guarda o segredo HMAC para este canal neste browser. */
@@ -58,12 +66,14 @@ interface IframeMacChatProps {
     title?: string;
     /** Texto do placeholder do input. */
     placeholder?: string;
+    /** Modo inicial se o browser ainda não tiver preferência (default 'direct'). */
+    defaultMode?: BridgeMode;
 }
 /**
  * Painel de chat auto-contido que fala com o Claude Code local (via daemon).
  * Estilos inline → funciona em qualquer site sem depender do design system dele.
  * Marcado com data-iframe-mac-ignore para não aparecer nas capturas de ecrã.
  */
-declare function IframeMacChat({ supabase, channel, enabled, title, placeholder, }: IframeMacChatProps): react.JSX.Element;
+declare function IframeMacChat({ supabase, channel, enabled, title, placeholder, defaultMode, }: IframeMacChatProps): react.JSX.Element;
 
 export { type BridgeMessage, type IframeMac, IframeMacChat, type IframeMacChatProps, type UseIframeMacOptions, useIframeMac };

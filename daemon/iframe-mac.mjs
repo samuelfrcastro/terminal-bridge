@@ -15,18 +15,23 @@
  *   BRIDGE_MODEL          modelo do Claude Code (opcional; default = o do CLI)
  *   BRIDGE_FLAG           marca da aba a capturar (default 'claude')
  *
+ * Três modos, escolhíveis por mensagem (payload.mode) ou pelo default do env (BRIDGE_MODE):
+ *   "direct"   — corre o Claude Code aqui (mac-3), streaming. One-shot com continuidade de sessão.
+ *   "queue"    — delega ao dashboard-3macs (fila serializada, com target_host). Sobrevive a restart.
+ *   "terminal" — sessão tmux persistente aqui (mac-3); o chat vira um shell ao vivo.
+ *
  * Modo fila de tarefas (BRIDGE_MODE=queue):
- *   BRIDGE_MODE           "queue" para delegar ao dashboard-3macs em vez de correr Claude localmente
- *   BRIDGE_QUEUE_URL      URL base do dashboard (ex https://ioc-1.tail215de3.ts.net:4747)
+ *   BRIDGE_QUEUE_URL      URL base do dashboard (ex https://ioc-1.tail215de3.ts.net:4748)
  *   BRIDGE_QUEUE_TOKEN    token admin do dashboard (~/.claude/dashboard-token)
  *   BRIDGE_PROJECT        nome do projeto para serialização da fila (ex 'iocmanager')
+ *   BRIDGE_TARGET_HOST    runner que deve executar a tarefa (ex 'mac-3')
  *   BRIDGE_SITE_NAME      nome legível do site para aparecer no prompt (default: BRIDGE_CHANNEL)
  */
 
 import { createClient } from "@supabase/supabase-js";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { writeFileSync, readFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, readFileSync, unlinkSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
@@ -41,8 +46,15 @@ const ROOT = process.env.AGENT_PROJECT_ROOT || process.cwd();
 const CHANNEL = process.env.BRIDGE_CHANNEL || "iframe-mac";
 const MODEL = process.env.BRIDGE_MODEL || "";
 
-// Modo fila de tarefas
-const BRIDGE_MODE = process.env.BRIDGE_MODE || "direct"; // "direct" | "queue"
+// Modo por defeito (usado quando o frontend não envia payload.mode). Por mensagem,
+// o frontend pode escolher qualquer um dos três: "direct" | "queue" | "terminal".
+const VALID_MODES = new Set(["direct", "queue", "terminal"]);
+const BRIDGE_MODE = VALID_MODES.has(process.env.BRIDGE_MODE) ? process.env.BRIDGE_MODE : "direct";
+/** Resolve o modo de uma mensagem: payload.mode (se válido) senão o default do env. */
+function resolveMode(payload) {
+  const m = String(payload?.mode || "").toLowerCase();
+  return VALID_MODES.has(m) ? m : BRIDGE_MODE;
+}
 const BRIDGE_QUEUE_URL = (process.env.BRIDGE_QUEUE_URL || "").replace(/\/$/, "");
 const BRIDGE_QUEUE_TOKEN = process.env.BRIDGE_QUEUE_TOKEN || "";
 const BRIDGE_PROJECT = process.env.BRIDGE_PROJECT || "";
@@ -430,9 +442,149 @@ async function handleQueue(payload) {
   await runQueuePoll(taskId, payload.id);
 }
 
+// ── Modo terminal (tmux persistente, local = mac-3) ───────────────────────────
+// O chat vira um shell ao vivo: cada mensagem é escrita numa sessão tmux que
+// persiste cwd/env/histórico entre mensagens. A saída do painel é canalizada
+// (pipe-pane) para um log e transmitida ao chat como deltas, em streaming.
+const TMUX = "tmux";
+const TERM_SESSION = `tb-${CHANNEL}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+const TERM_LOG = join("/tmp", `iframe-mac-term-${TERM_SESSION}.log`);
+let termPiped = false;
+
+function tmux(args) {
+  return execFileP(TMUX, args, { env: childEnv, timeout: 15_000 });
+}
+
+// Remove sequências ANSI/cursor e \r para texto legível no chat.
+const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][0-9A-B]|\x1b[=>]|\x1b\][^\x07]*\x07|\r/g;
+const stripAnsi = (s) => s.replace(ANSI_RE, "").replace(/[^\n]\x08/g, "");
+
+async function ensureTermSession() {
+  let exists = true;
+  try { await tmux(["has-session", "-t", TERM_SESSION]); }
+  catch { exists = false; }
+  if (!exists) {
+    // Shell limpa (bash --norc, prompt vazio) → saída sem ruído de prompts/autosuggest.
+    // Herda o PATH do daemon (bun/homebrew/.local), por isso os comandos resolvem-se.
+    await tmux(["new-session", "-d", "-s", TERM_SESSION, "-x", "220", "-y", "50", "-c", ROOT,
+      "env", "PS1=", "PS2=", "bash", "--norc", "-i"]);
+    await tmux(["set-option", "-t", TERM_SESSION, "history-limit", "100000"]).catch(() => {});
+    termPiped = false;
+    await new Promise((r) => setTimeout(r, 700)); // dá tempo à shell de ficar interativa
+  }
+  // (Re)liga o pipe-pane para o log — pipe-pane substitui qualquer pipe anterior,
+  // por isso é idempotente. -O = captura só o output do painel.
+  if (!termPiped) {
+    try { writeFileSync(TERM_LOG, ""); } catch {}
+    await tmux(["pipe-pane", "-O", "-t", TERM_SESSION, `cat >> ${TERM_LOG}`]).catch(() => {});
+    termPiped = true;
+  }
+}
+
+function fileSize(file) { try { return statSync(file).size; } catch { return 0; } }
+
+// Lê os bytes novos do log a partir de `offset`. Devolve { text, size }.
+function readFrom(file, offset) {
+  try {
+    const sz = statSync(file).size;
+    if (sz <= offset) return { text: "", size: sz };
+    const fd = openSync(file, "r");
+    const len = sz - offset;
+    const buf = Buffer.allocUnsafe(len);
+    readSync(fd, buf, 0, len, offset);
+    closeSync(fd);
+    return { text: buf.toString("utf8"), size: sz };
+  } catch { return { text: "", size: offset }; }
+}
+
+async function handleTerminal(payload) {
+  const text = (payload?.text || "").trim();
+  if (!text) return;
+  notify(`🖥️ ${CHANNEL}`, text);
+
+  if (busy) {
+    await sendAssistantWithAck({ id: payload.id, text: "⏳ Ainda estou a tratar do pedido anterior — aguarda um momento." });
+    return;
+  }
+  busy = true;
+  const t0 = Date.now();
+  console.log(`\n\x1b[35m[app→term]\x1b[0m ${text}`);
+
+  // Envios serializados (preserva a ordem dos deltas).
+  let sendQ = Promise.resolve();
+  const send = (event, extra) =>
+    (sendQ = sendQ.then(() => channel.send({ type: "broadcast", event, payload: { id: payload.id, ...extra } })).catch(() => {}));
+
+  try {
+    await ensureTermSession();
+    const marker = `__TBEND_${String(payload.id).replace(/[^a-zA-Z0-9]/g, "")}`;
+    const markerRe = new RegExp(`${marker}:(-?\\d+)`);
+    const startOffset = fileSize(TERM_LOG);
+
+    // Escreve o comando, depois um eco com marcador + exit code (deteta conclusão).
+    await tmux(["send-keys", "-t", TERM_SESSION, "-l", text]);
+    await tmux(["send-keys", "-t", TERM_SESSION, "Enter"]);
+    await tmux(["send-keys", "-t", TERM_SESSION, "-l", `__rc=$?; echo "${marker}:$__rc"`]);
+    await tmux(["send-keys", "-t", TERM_SESSION, "Enter"]);
+
+    // Limpa o texto para exibição: tira ANSI e as linhas internas (eco do marcador).
+    const clean = (raw) =>
+      stripAnsi(raw)
+        .split("\n")
+        .filter((l) => !l.includes(marker) && !l.includes("__rc=$?"))
+        .join("\n");
+
+    let offset = startOffset;
+    let acc = "";
+    let emitted = "";
+    let rc = null;
+    const POLL = 350;
+    const deadline = Date.now() + 10 * 60_000;
+
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, POLL));
+      const { text: chunk, size } = readFrom(TERM_LOG, offset);
+      offset = size;
+      if (chunk) acc += chunk;
+
+      const m = acc.match(markerRe);
+      const visibleRaw = m ? acc.slice(0, acc.indexOf(m[0])) : acc;
+      const visible = clean(visibleRaw);
+      if (m) rc = parseInt(m[1], 10);
+
+      // Emite só o delta novo (prefixo estável → diff por comprimento).
+      if (visible.length > emitted.length && visible.startsWith(emitted)) {
+        send("assistant_delta", { text: visible.slice(emitted.length) });
+        emitted = visible;
+      } else if (visible !== emitted) {
+        emitted = visible; // re-sincroniza em saltos raros (sem reenviar)
+      }
+      if (m) break;
+    }
+    await sendQ;
+
+    let finalText = clean(acc.replace(markerRe, "")).replace(/\n{3,}/g, "\n\n").trim();
+    if (rc !== null && rc !== 0) finalText += `\n\n[exit ${rc}]`;
+    if (!finalText) finalText = rc === null
+      ? "⏱ Comando ainda a correr após 10 min — a sessão de terminal continua viva."
+      : "(sem saída)";
+    console.log(`\x1b[32m[term→app]\x1b[0m (${((Date.now() - t0) / 1000).toFixed(1)}s) rc=${rc}`);
+    notify(`🖥️ ${CHANNEL}`, finalText);
+    await sendAssistantWithAck({ id: payload.id, text: finalText, streamed: true, mode: "terminal" });
+  } catch (e) {
+    console.error(`\x1b[31m[bridge]\x1b[0m terminal erro: ${e?.message || e}`);
+    await sendAssistantWithAck({ id: payload.id, text: "❌ Erro no terminal: " + (e?.message || e) });
+  } finally {
+    busy = false;
+  }
+}
+
 async function handle(payload) {
-  // Delega para a fila do dashboard quando BRIDGE_MODE=queue
-  if (BRIDGE_MODE === "queue") return handleQueue(payload);
+  // Modo escolhido por mensagem (frontend) ou default do env.
+  const mode = resolveMode(payload);
+  if (mode === "queue") return handleQueue(payload);
+  if (mode === "terminal") return handleTerminal(payload);
+  // mode === "direct": corre o Claude Code aqui (mac-3).
 
   const text = (payload?.text || "").trim();
   if (!text) return;
@@ -545,7 +697,7 @@ channel
   .subscribe((status) => {
     console.log(`[bridge] canal "${CHANNEL}": ${status}`);
     if (status === "SUBSCRIBED") {
-      console.log(`[bridge] ✓ pronto (projeto: ${ROOT}). Modelo: ${MODEL || "(default do CLI)"}`);
+      console.log(`[bridge] ✓ pronto (projeto: ${ROOT}). Modo default: ${BRIDGE_MODE} · Modelo: ${MODEL || "(default do CLI)"} · Terminal: tmux ${TERM_SESSION}`);
       // Anunciar presença via Presence — o browser usa presenceState() para detectar "online"
       channel.track({ online: true, project: ROOT, ts: Date.now() }).catch(() => {});
       sendHeartbeat();

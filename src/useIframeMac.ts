@@ -23,6 +23,9 @@ export const DEFAULT_HUB = {
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB6bGFrcXFua3ZvZ3RmdmlwcHZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NTQzOTYsImV4cCI6MjA5MzAzMDM5Nn0.uHbz-Ft4MCLbcMPAS-tFMQhDny7XCkevUD-fBgW0euQ',
 };
 
+/** Modo de execução do pedido — escolhido por mensagem, todos correm no alvo mac-3. */
+export type BridgeMode = 'direct' | 'queue' | 'terminal';
+
 export interface UseIframeMacOptions {
   /** Cliente Supabase a usar. Se omitido, usa o hub Realtime partilhado (DEFAULT_HUB). */
   supabase?: SupabaseClient;
@@ -34,6 +37,8 @@ export interface UseIframeMacOptions {
   captureMobileScreen?: boolean;
   /** Mostrar notificações do browser em mensagens novas (default true; precisa de permissão). */
   notify?: boolean;
+  /** Modo inicial se o browser ainda não tiver preferência guardada (default 'direct'). */
+  defaultMode?: BridgeMode;
 }
 
 export interface IframeMac {
@@ -42,6 +47,10 @@ export interface IframeMac {
   /** true enquanto o daemon (Claude Code) estiver presente no canal. */
   online: boolean;
   sendMessage: (content: string) => Promise<void>;
+  /** Modo de execução atual (direct/queue/terminal) — guardado por canal. */
+  mode: BridgeMode;
+  /** Muda o modo de execução (persiste no localStorage por canal). */
+  setMode: (m: BridgeMode) => void;
   /** true se não há segredo configurado neste browser (mensagens serão rejeitadas pelo daemon). */
   locked: boolean;
   /** Guarda o segredo HMAC para este canal neste browser. */
@@ -99,6 +108,22 @@ const writeNotifyPref = (channel: string, on: boolean) => {
   } catch {}
 };
 
+/** Modo de execução (direct/queue/terminal), por canal — default 'direct'. */
+const VALID_MODES: BridgeMode[] = ['direct', 'queue', 'terminal'];
+const modeKey = (channel: string) => `tb-mode:${channel}`;
+const readMode = (channel: string, fallback: BridgeMode): BridgeMode => {
+  try {
+    if (typeof window === 'undefined') return fallback;
+    const v = window.localStorage.getItem(modeKey(channel)) as BridgeMode | null;
+    return v && VALID_MODES.includes(v) ? v : fallback;
+  } catch {
+    return fallback;
+  }
+};
+const writeMode = (channel: string, m: BridgeMode) => {
+  try { if (typeof window !== 'undefined') window.localStorage.setItem(modeKey(channel), m); } catch {}
+};
+
 /** Beep curto via WebAudio (reutiliza o AudioContext). Falha em silêncio. */
 let audioCtx: AudioContext | null = null;
 function beep() {
@@ -145,7 +170,7 @@ async function captureScreenSmall(maxB64 = 180_000): Promise<string | null> {
  * Online/offline por Presence (sem mensagens periódicas). Genérico: serve qualquer site.
  */
 export function useIframeMac(opts: UseIframeMacOptions = {}): IframeMac {
-  const { supabase, channel = 'iframe-mac', enabled = true, captureMobileScreen = true, notify = true } = opts;
+  const { supabase, channel = 'iframe-mac', enabled = true, captureMobileScreen = true, notify = true, defaultMode = 'direct' } = opts;
 
   // Usa o supabase fornecido, ou cria (uma vez) um client do hub partilhado.
   const client = useMemo(
@@ -168,6 +193,17 @@ export function useIframeMac(opts: UseIframeMacOptions = {}): IframeMac {
     writeSecret(channel, trimmed);
     setSecret(trimmed);
   }, [channel]);
+
+  // Modo de execução (direct/queue/terminal), por canal.
+  const [mode, setModeState] = useState<BridgeMode>(() => readMode(channel, defaultMode));
+  const setMode = useCallback((m: BridgeMode) => {
+    writeMode(channel, m);
+    setModeState(m);
+  }, [channel]);
+  useEffect(() => { setModeState(readMode(channel, defaultMode)); }, [channel, defaultMode]);
+  // Ref para o sender ler sempre o modo atual sem recriar o callback.
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
 
   // Ao montar (ou mudar canal): consumir ?tb-secret= da URL e remover o param.
   useEffect(() => {
@@ -356,7 +392,7 @@ export function useIframeMac(opts: UseIframeMacOptions = {}): IframeMac {
       const device = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? 'mobile' : 'desktop';
       const image = device === 'mobile' && captureMobileScreen ? await captureScreenSmall() : null;
       const sig = secret ? await signMessage(secret, id, ts, text).catch(() => undefined) : undefined;
-      const msgPayload = { id, text, ts, sig, route, device, image };
+      const msgPayload = { id, text, ts, sig, route, device, image, mode: modeRef.current };
 
       // Enviar com ACK + retry: aguarda confirmação do daemon em 6s, repete até 3x.
       // Soft fail: se o daemon for antigo e nunca enviar ACK, avisa o utilizador após 3 tentativas.
@@ -389,6 +425,8 @@ export function useIframeMac(opts: UseIframeMacOptions = {}): IframeMac {
     isStreaming,
     online,
     sendMessage,
+    mode,
+    setMode,
     locked,
     unlock,
     notificationPermission: permission,

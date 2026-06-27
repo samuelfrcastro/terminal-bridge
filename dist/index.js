@@ -42,6 +42,23 @@ var writeNotifyPref = (channel, on) => {
   } catch {
   }
 };
+var VALID_MODES = ["direct", "queue", "terminal"];
+var modeKey = (channel) => `tb-mode:${channel}`;
+var readMode = (channel, fallback) => {
+  try {
+    if (typeof window === "undefined") return fallback;
+    const v = window.localStorage.getItem(modeKey(channel));
+    return v && VALID_MODES.includes(v) ? v : fallback;
+  } catch {
+    return fallback;
+  }
+};
+var writeMode = (channel, m) => {
+  try {
+    if (typeof window !== "undefined") window.localStorage.setItem(modeKey(channel), m);
+  } catch {
+  }
+};
 var audioCtx = null;
 function beep() {
   try {
@@ -80,7 +97,7 @@ async function captureScreenSmall(maxB64 = 18e4) {
   }
 }
 function useIframeMac(opts = {}) {
-  const { supabase, channel = "iframe-mac", enabled = true, captureMobileScreen = true, notify = true } = opts;
+  const { supabase, channel = "iframe-mac", enabled = true, captureMobileScreen = true, notify = true, defaultMode = "direct" } = opts;
   const client = useMemo(
     () => supabase ?? createClient(DEFAULT_HUB.url, DEFAULT_HUB.anonKey, { auth: { persistSession: false } }),
     [supabase]
@@ -97,6 +114,16 @@ function useIframeMac(opts = {}) {
     writeSecret(channel, trimmed);
     setSecret(trimmed);
   }, [channel]);
+  const [mode, setModeState] = useState(() => readMode(channel, defaultMode));
+  const setMode = useCallback((m) => {
+    writeMode(channel, m);
+    setModeState(m);
+  }, [channel]);
+  useEffect(() => {
+    setModeState(readMode(channel, defaultMode));
+  }, [channel, defaultMode]);
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
@@ -262,7 +289,7 @@ function useIframeMac(opts = {}) {
       const device = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? "mobile" : "desktop";
       const image = device === "mobile" && captureMobileScreen ? await captureScreenSmall() : null;
       const sig = secret ? await signMessage(secret, id, ts, text).catch(() => void 0) : void 0;
-      const msgPayload = { id, text, ts, sig, route, device, image };
+      const msgPayload = { id, text, ts, sig, route, device, image, mode: modeRef.current };
       const MAX_RETRIES = 3;
       const ACK_TIMEOUT_MS = 6e3;
       const RETRY_DELAYS = [0, 2e3, 6e4];
@@ -296,6 +323,8 @@ function useIframeMac(opts = {}) {
     isStreaming,
     online,
     sendMessage,
+    mode,
+    setMode,
     locked,
     unlock,
     notificationPermission: permission,
@@ -308,25 +337,33 @@ function useIframeMac(opts = {}) {
 // src/IframeMacChat.tsx
 import { useEffect as useEffect2, useRef as useRef2, useState as useState2 } from "react";
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
+var MODES = [
+  { key: "direct", icon: "\u26A1", label: "Direto", hint: "Claude Code a correr na m\xE1quina (mac-3) \u2014 resposta imediata em streaming." },
+  { key: "queue", icon: "\u{1F4CB}", label: "Fila", hint: "Enfileira como tarefa no dashboard (serializada, com hist\xF3rico) no alvo mac-3." },
+  { key: "terminal", icon: "\u{1F5A5}\uFE0F", label: "Terminal", hint: "Shell tmux persistente em mac-3 \u2014 corre comandos e v\xEA a sa\xEDda ao vivo." }
+];
 function IframeMacChat({
   supabase,
   channel,
   enabled = true,
   title = "Terminal",
-  placeholder = "Escreve uma mensagem\u2026"
+  placeholder = "Escreve uma mensagem\u2026",
+  defaultMode = "direct"
 }) {
   const {
     messages,
     isStreaming,
     online,
     sendMessage,
+    mode,
+    setMode,
     locked,
     unlock,
     notificationPermission,
     notificationsOn,
     enableNotifications,
     disableNotifications
-  } = useIframeMac({ supabase, channel, enabled });
+  } = useIframeMac({ supabase, channel, enabled, defaultMode });
   const [input, setInput] = useState2("");
   const [codeInput, setCodeInput] = useState2("");
   const listRef = useRef2(null);
@@ -412,6 +449,50 @@ function IframeMacChat({
                 }
               )
             ]
+          }
+        ),
+        /* @__PURE__ */ jsx(
+          "div",
+          {
+            title: MODES.find((x) => x.key === mode)?.hint,
+            style: {
+              display: "flex",
+              gap: 4,
+              padding: "6px 10px",
+              borderBottom: "1px solid #1f2937",
+              background: "#0d1320"
+            },
+            children: MODES.map((x) => {
+              const active = mode === x.key;
+              return /* @__PURE__ */ jsxs(
+                "button",
+                {
+                  onClick: () => setMode(x.key),
+                  title: x.hint,
+                  style: {
+                    flex: 1,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 5,
+                    padding: "5px 8px",
+                    borderRadius: 7,
+                    border: "1px solid " + (active ? "#2563eb" : "#283246"),
+                    background: active ? "#1d4ed8" : "transparent",
+                    color: active ? "#fff" : "#9ca3af",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: active ? 600 : 500,
+                    transition: "background 120ms, border-color 120ms"
+                  },
+                  children: [
+                    /* @__PURE__ */ jsx("span", { "aria-hidden": true, children: x.icon }),
+                    x.label
+                  ]
+                },
+                x.key
+              );
+            })
           }
         ),
         locked ? (
@@ -517,7 +598,7 @@ function IframeMacChat({
                     submit();
                   }
                 },
-                placeholder,
+                placeholder: mode === "terminal" ? "Comando de shell\u2026 (ex. git status)" : placeholder,
                 rows: 1,
                 style: {
                   flex: 1,
